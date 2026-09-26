@@ -46,14 +46,14 @@ jobs:
           --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
           python-version: "3.10"
-      - uses: actions/setup-node@v4      # pyright 需要 node
+      - uses: actions/setup-node@v7      # pyright 需要 node
         with:
-          node-version: "20"
+          node-version: "22"
       - name: 安装依赖（锁定 uv.lock）
         run: uv sync --locked
       - name: lint（ruff）

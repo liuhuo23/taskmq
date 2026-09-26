@@ -333,6 +333,13 @@ def send_email_bound(self, to: str, subject: str) -> str:
 
 完整设计：[docs/design.md](docs/design.md) 与分册 [docs/design/](docs/design/)。
 
+## 发版
+
+CI 在 `main` 上全绿后，[release.yml](.github/workflows/release.yml) 会自动把 `pyproject.toml` 的版本
+打成 tag + GitHub Release（`0.1.0.dev0` → `v0.1.0`，同名 tag 已存在就跳过，幂等）。
+发下一个版本：改 `version`，合进 `main` 即可；CI 跑 ruff + mypy + pyright + 全量 pytest
+（Redis / Redis Cluster / PostgreSQL / RabbitMQ 都是真服务，见 [ci.yml](.github/workflows/ci.yml)）。
+
 ## License
 
 [MIT](LICENSE) © 2026 liuhuo
