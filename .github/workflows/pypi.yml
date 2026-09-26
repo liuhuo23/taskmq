@@ -1,0 +1,74 @@
+name: pypi
+
+# 发布到 PyPI。
+#
+# 默认走 **Trusted Publishing（OIDC）**：不需要在仓库里存任何长期 token，
+# 由 GitHub Actions 用一次性 OIDC 凭据换取 PyPI 的短时上传权限。
+#
+# 一次性准备（只能你在 PyPI 网页上做，API 不支持）：
+#   https://pypi.org/manage/account/publishing/ → "Add a pending publisher"
+#     PyPI Project Name : taskmq
+#     Owner             : liuhuo23
+#     Repository name   : taskmq
+#     Workflow name     : pypi.yml
+#     Environment name  : pypi
+#   （想先发 TestPyPI 就在 https://test.pypi.org/manage/account/publishing/ 加同样的 pending publisher）
+#
+# 之后：
+#   - GitHub Release 发布后自动触发（release: published）；
+#   - 或手动 Actions → pypi → Run workflow（可选发 TestPyPI 试跑）。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 发到哪个索引
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+
+permissions:
+  contents: read
+  id-token: write        # OIDC：向 PyPI 证明"我是这个仓库的这个 workflow"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.10"
+      - name: 构建 wheel + sdist
+        run: uv build
+      - name: 校验产物（版本 / 元数据 / 文件齐全）
+        run: |
+          ls -l dist/
+          uvx twine check dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/taskmq
+    steps:
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - name: 发布（Trusted Publishing，无 token）
+        run: |
+          target="${{ inputs.target || 'pypi' }}"
+          echo "目标索引：$target"
+          if [ "$target" = "testpypi" ]; then
+            uv publish --trusted-publishing always --publish-url https://test.pypi.org/legacy/
+          else
+            uv publish --trusted-publishing always
+          fi
