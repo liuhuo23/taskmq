@@ -89,6 +89,15 @@ class TaskTimeout(TaskError):
     """协作式超时（软超时）。"""
 
 
+# -------------------------------------------------------------------- 工作流
+class WorkflowError(TaskError):
+    """DAG 工作流层面的错误（定义非法、运行未成功、等待超时）。
+
+    `WorkflowPlan` 的定义期校验抛 `ConfigError`（配置问题，启动即失败）；
+    运行期（等待汇结果失败/超时）抛本异常，消息里带每节点状态便于排查。
+    """
+
+
 def error_text(exc: BaseException) -> str:
     """`类型: 消息` 形式的简短错误文本。"""
     text = str(exc)

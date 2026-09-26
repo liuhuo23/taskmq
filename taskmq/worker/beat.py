@@ -18,8 +18,9 @@ import secrets
 import socket
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from ..errors import TransportError
 from ..schedule import Schedule
@@ -174,10 +175,17 @@ class Beat:
         self._stopping.set()
 
     def close(self) -> None:
+        """优雅退出：停 tick、存状态、**主动释放选主租约**（follower 可立刻接手）。"""
         self.stop()
         self._save_state()
+        if self.is_leader and getattr(self.transport, "supports_leases", False):
+            try:
+                self.transport.release_lease(self.lease_name, self.owner)
+            except TransportError:  # pragma: no cover - 能力位与实现不一致
+                logger.debug("释放 beat 租约失败", exc_info=True)
+            self.is_leader = False
 
-    def __enter__(self) -> "Beat":
+    def __enter__(self) -> Beat:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:

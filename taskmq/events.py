@@ -9,7 +9,7 @@ import json
 import sys
 import threading
 import time
-from typing import Any, Protocol, TextIO, runtime_checkable
+from typing import Any, Protocol, TextIO, cast, runtime_checkable
 
 
 @runtime_checkable
@@ -58,9 +58,26 @@ def build_sink(kind: str) -> EventSink:
         return JsonStdoutSink()
     if kind == "null":
         return NullSink()
+    if kind == "otel":
+        from .otel import otel_sink
+
+        return otel_sink()
+    # 插件注册的 sink（内建优先；懒发现 entry points）
+    from .plugins import known_sinks, load_plugins, sink_factory
+
+    factory = sink_factory(kind)
+    if factory is None:
+        load_plugins(entry_points=True)
+        factory = sink_factory(kind)
+    if factory is not None:
+        return cast("EventSink", factory())
     from .errors import ConfigError
 
-    raise ConfigError(f'events 可选 "stdout" | "null"，收到 {kind!r}')
+    known = sorted({"stdout", "null", "otel"} | set(known_sinks()))
+    raise ConfigError(
+        f"未知的 events={kind!r}，可选：{', '.join(known)}"
+        "（自定义 sink 用 taskmq.plugins.register_sink）"
+    )
 
 
 __all__ = ["EventSink", "JsonStdoutSink", "CollectingSink", "NullSink", "build_sink"]

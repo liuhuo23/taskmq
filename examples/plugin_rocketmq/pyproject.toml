@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taskmq-rocketmq"
+version = "0.0.1"
+description = "taskmq 的 RocketMQ 适配插件（示例：假实现 + 真接入说明）"
+requires-python = ">=3.10"
+dependencies = ["taskmq>=0.0.1"]
+
+# 被 taskmq 自动发现的唯一要求：声明这个 entry point 组
+[project.entry-points."taskmq.plugins"]
+rocketmq = "taskmq_rocketmq"
+
+[tool.setuptools.packages.find]
+include = ["taskmq_rocketmq*"]

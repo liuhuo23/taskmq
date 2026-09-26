@@ -157,7 +157,8 @@ def test_config_from_env_is_explicit():
 
 
 def test_unknown_transport_scheme_raises():
-    app = App(Config(transport="redis://localhost:6379/0", serializer="json"))
+    # redis:// 已实现（Phase 1）；amqp:// 是 Phase 2，仍未实现
+    app = App(Config(transport="amqp://guest@localhost//", serializer="json"))
     with pytest.raises(ConfigError):
         _ = app.transport
 

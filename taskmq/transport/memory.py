@@ -27,6 +27,7 @@ from .base import (
     MessageState,
     QueueStat,
     Transport,
+    WorkerInfo,
 )
 
 __all__ = ["MemoryTransport"]
@@ -57,6 +58,8 @@ class MemoryTransport(Transport):
     """进程内 transport。`clock` 可注入（测试里用假时钟推进租约/退避）。"""
 
     supports_leases = True
+    supports_workers = True
+    supports_job_listing = True
 
     def __init__(
         self,
@@ -66,6 +69,7 @@ class MemoryTransport(Transport):
     ) -> None:
         self._clock = clock or time.time
         self._leases: dict[str, tuple[str, float]] = {}
+        self._workers: dict[str, WorkerInfo] = {}
         self._lock = threading.RLock()
         self._messages: dict[int, _Message] = {}
         self._jobs: dict[str, JobRecord] = {}
@@ -580,6 +584,78 @@ class MemoryTransport(Transport):
                     job, state=JobState.QUEUED, error=None, updated_at=now
                 )
             return True
+
+    # -------------------------------------------------------------- worker 心跳
+    def register_worker(
+        self,
+        worker_id: str,
+        *,
+        queues: Sequence[str] = (),
+        pool: str = "",
+        concurrency: int = 0,
+        meta: Mapping[str, Any] | None = None,
+        now: float | None = None,
+    ) -> None:
+        moment = self._now() if now is None else float(now)
+        with self._lock:
+            self._workers[worker_id] = WorkerInfo(
+                worker_id=worker_id,
+                queues=tuple(queues),
+                pool=pool,
+                concurrency=int(concurrency),
+                started_at=moment,
+                heartbeat_at=moment,
+                meta=dict(meta or {}),
+            )
+
+    def heartbeat_worker(
+        self,
+        worker_id: str,
+        *,
+        meta: Mapping[str, Any] | None = None,
+        now: float | None = None,
+    ) -> None:
+        moment = self._now() if now is None else float(now)
+        with self._lock:
+            current = self._workers.get(worker_id)
+            if current is None:
+                self._workers[worker_id] = WorkerInfo(
+                    worker_id=worker_id, started_at=moment, heartbeat_at=moment, meta=dict(meta or {})
+                )
+                return
+            merged = dict(current.meta)
+            merged.update(meta or {})
+            self._workers[worker_id] = dataclasses.replace(
+                current, heartbeat_at=moment, meta=merged
+            )
+
+    def deregister_worker(self, worker_id: str) -> None:
+        with self._lock:
+            self._workers.pop(worker_id, None)
+
+    def list_workers(
+        self, *, stale_after: float = 60.0, now: float | None = None
+    ) -> list[WorkerInfo]:
+        with self._lock:
+            return sorted(self._workers.values(), key=lambda item: item.worker_id)
+
+    def list_jobs(
+        self,
+        *,
+        prefix: str | None = None,
+        states: Sequence[str] | None = None,
+        limit: int = 100,
+    ) -> list[JobRecord]:
+        wanted = set(states) if states is not None else None
+        with self._lock:
+            records = [
+                record
+                for job_id, record in self._jobs.items()
+                if (prefix is None or job_id.startswith(prefix))
+                and (wanted is None or record.state in wanted)
+            ]
+        records.sort(key=lambda item: item.updated_at, reverse=True)
+        return records[: max(0, limit)]
 
     # ------------------------------------------------------------------ 关闭
     def close(self) -> None:

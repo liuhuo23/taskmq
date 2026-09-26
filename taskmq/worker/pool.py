@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from ..errors import ConfigError
+from ..plugins import BUILTIN_POOLS
 from ..transport.base import JobState
 from .execution import BodyOutcome, ChildTask, init_child, run_child_task
 
@@ -124,6 +125,10 @@ class AsyncPool(ThreadPool):
 def _child_main(payload: ChildTask, conn: Any) -> None:
     """可强杀路径的子进程入口：跑完把结果写回管道。"""
     try:
+        if payload.plugins:
+            from ..plugins import load_plugins
+
+            load_plugins(list(payload.plugins), entry_points=False)
         init_child(payload.app_spec)
         outcome = run_child_task(payload)
     except BaseException as exc:  # noqa: BLE001 - 子进程要尽力回传失败原因
@@ -241,7 +246,13 @@ def make_pool(name: str, concurrency: int, *, app_spec: str | None = None) -> Po
         return AsyncPool(concurrency)
     if name == "processes":
         return ProcessPool(concurrency, app_spec=app_spec)
-    raise ValueError(f"未知 pool：{name!r}")
+    from ..plugins import PoolOptions, known_pools, pool_factory
+
+    factory = pool_factory(name)                     # 预留扩展点：插件注册的池
+    if factory is not None:
+        return factory(PoolOptions(name=name, concurrency=concurrency, app_spec=app_spec))
+    known = tuple(BUILTIN_POOLS) + tuple(sorted(set(known_pools()) - set(BUILTIN_POOLS)))
+    raise ValueError(f"未知 pool：{name!r}，可选 {known}")
 
 
 __all__ = ["Pool", "SoloPool", "ThreadPool", "AsyncPool", "ProcessPool", "make_pool"]

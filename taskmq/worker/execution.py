@@ -69,6 +69,7 @@ class ChildTask:
     deliveries: int
     ack_mode: str = ACK_ON_SUCCESS
     hard_timeout: float | None = None
+    plugins: tuple[str, ...] = ()          # 子进程要重建同样的插件注册表（docs/design/plugins.md §5）
 
 
 def init_child(app_spec: str) -> None:
@@ -81,6 +82,10 @@ def init_child(app_spec: str) -> None:
 
 def run_child_task(payload: ChildTask) -> BodyOutcome:
     """子进程侧入口：跑完整套钩子 + 任务体，返回可 pickle 的结果。"""
+    if payload.plugins:
+        from ..plugins import load_plugins
+
+        load_plugins(list(payload.plugins), entry_points=False)
     app = _CHILD_APP
     if app is None:  # 独立进程模式（可强杀路径）
         init_child(payload.app_spec)

@@ -23,6 +23,13 @@ from .errors import (
     TransportError,
     UnsupportedCodec,
 )
+from .plugins import (
+    TransportOptions,
+    register_codec,
+    register_pool,
+    register_sink,
+    register_transport,
+)
 from .priority import PRIORITY_MAX, PRIORITY_MIN, Priority, validate_priority
 from .protocol import PROTOCOL_VERSION, Envelope
 from .task import Retry, Task, TaskContext, TaskHandle, current_app, current_task
@@ -34,8 +41,11 @@ from .transport.base import (
     MessageState,
     QueueStat,
     Transport,
+    WorkerInfo,
 )
 from .transport.memory import MemoryTransport
+from .transport.postgres import PostgresTransport
+from .transport.redis import RedisTransport
 from .transport.sqlite import SqliteTransport
 from .worker.runner import Worker
 
@@ -53,6 +63,11 @@ __all__ = [
     "current_task",
     "current_app",
     "Priority",
+    "TransportOptions",
+    "register_codec",
+    "register_pool",
+    "register_sink",
+    "register_transport",
     "PRIORITY_MIN",
     "PRIORITY_MAX",
     "validate_priority",
@@ -61,12 +76,15 @@ __all__ = [
     "Transport",
     "MemoryTransport",
     "SqliteTransport",
+    "RedisTransport",
+    "PostgresTransport",
     "Delivery",
     "JobRecord",
     "JobState",
     "MessageState",
     "QueueStat",
     "DeadLetter",
+    "WorkerInfo",
     "TaskMQError",
     "ConfigError",
     "ProtocolError",

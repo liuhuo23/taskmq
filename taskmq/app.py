@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-import importlib
+import dataclasses
 import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -26,15 +26,32 @@ from typing import (
 )
 
 from .config import Config
-from .errors import ConfigError, TaskError, error_text
+from .errors import ConfigError, TaskError, WorkflowError, error_text
 from .events import EventSink, build_sink
+from .plugins import (
+    BUILTIN_TRANSPORTS,
+    TransportOptions,
+    env_plugins,
+    load_plugin,
+    load_plugins,
+    transport_factory,
+    unknown_scheme_message,
+)
 from .priority import validate_priority
-from .protocol import ACK_ON_SUCCESS, ACK_STRATEGIES, Codec, CodecRegistry, Envelope, get_codec
+from .protocol import ACK_ON_SUCCESS, ACK_STRATEGIES, Codec, CodecRegistry, Envelope, get_codec, new_ulid
 from .schedule import Schedule
 from .task import Task, TaskContext, TaskHandle, _reset_current, _set_current, run_hook
 from .transport.base import JobState, Transport
-from .transport.memory import MemoryTransport
-from .transport.sqlite import SqliteTransport
+from .transport.factory import build_transport
+from .workflow import (
+    RUN_META_WORKFLOW,
+    RUN_PREFIX,
+    Workflow,
+    WorkflowHandle,
+    WorkflowPlan,
+    encode_node_header,
+    run_meta,
+)
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -85,6 +102,10 @@ class App:
         self.config = config if config is not None else Config.from_env()
         if not isinstance(self.config, Config):
             raise ConfigError(f"config 必须是 Config，收到 {type(self.config).__name__}")
+        self._plugins: list[str] = []
+        # 显式声明的插件（include= 与 TASKMQ_PLUGINS=）先加载：它们是用户明确要求的，
+        # 而且可能注册了 events / pool / codec，必须在 config.validate() / build_sink() 之前生效。
+        self._load_declared_plugins(include)
         self.config.validate()
         self._codec_registry = CodecRegistry()
         self._tasks: dict[str, Task[Any, Any]] = {}
@@ -93,9 +114,7 @@ class App:
         self._closed = False
         self._sinks: list[EventSink] = [build_sink(self.config.events)]
         self._schedules: list[Schedule] = []
-
-        for module in include or ():
-            importlib.import_module(module)
+        self._workflows: dict[str, Workflow] = {}
 
     # -------------------------------------------------------------- 注册表
     @property
@@ -199,6 +218,210 @@ class App:
     def schedules(self) -> list[Schedule]:
         return list(self._schedules)
 
+    # ---------------------------------------------------------------- 插件
+    @property
+    def plugins(self) -> tuple[str, ...]:
+        """已显式加载的插件模块（进程池子进程要靠它重建同样的注册表）。"""
+        return tuple(dict.fromkeys(self._plugins))
+
+    def load_plugins(self, modules: Sequence[str] | str) -> list[str]:
+        """显式加载插件模块（支持 "a,b" 形式）。见 docs/design/plugins.md。"""
+        if isinstance(modules, str):
+            items = [item.strip() for item in modules.split(",") if item.strip()]
+        else:
+            items = list(modules)
+        loaded = load_plugins(items, entry_points=False)
+        for module in loaded:
+            if module not in self._plugins:
+                self._plugins.append(module)
+        return loaded
+
+    def _load_declared_plugins(self, include: Sequence[str] | None) -> None:
+        for module in list(include or ()) + env_plugins():
+            loaded = load_plugin(module)
+            if loaded not in self._plugins:
+                self._plugins.append(loaded)
+
+    # -------------------------------------------------------------- DAG 工作流
+    @property
+    def workflows(self) -> Mapping[str, Workflow]:
+        return dict(self._workflows)
+
+    def workflow(
+        self,
+        name: str,
+        *,
+        queue: str | None = None,
+        priority: int | None = None,
+        description: str = "",
+    ) -> Callable[[Callable[[Any, Mapping[str, Any]], Any]], Workflow]:
+        """注册一个 DAG 模板（docs/design/workflows.md）。
+
+        ```python
+        @app.workflow("etl")
+        def etl(wf, source):
+            extract = wf.step("extract", extract_task, args=(source,))
+            clean = wf.step("clean", clean_task, deps={"rows": extract})
+            return wf.join("report", report_task, deps=[clean], collect="tables")
+        ```
+        """
+
+        def decorator(build: Callable[[Any, Mapping[str, Any]], Any]) -> Workflow:
+            if name in self._workflows:
+                raise ConfigError(f"工作流名重复：{name}")
+            definition = Workflow(
+                name=name,
+                build=build,
+                queue=queue,
+                priority=priority,
+                description=description,
+            )
+            self._workflows[name] = definition
+            return definition
+
+        return decorator
+
+    def submit_workflow(
+        self,
+        name: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        queue: str | None = None,
+        priority: int | None = None,
+    ) -> WorkflowHandle:
+        """提交一次运行：写运行记录 → 幂等推进（入队所有 ready 节点）。"""
+        definition = self._workflows.get(name)
+        if definition is None:
+            raise ConfigError(f"未注册的工作流 {name!r}；已注册 {sorted(self._workflows)}")
+        if not getattr(self.transport, "supports_job_listing", False):
+            raise ConfigError(
+                f"{type(self.transport).__name__} 不支持 job 枚举（supports_job_listing=False），"
+                "DAG 工作流的补偿推进依赖它；请用 memory/sqlite/redis 或让插件实现 list_jobs()"
+            )
+        plan = definition.instantiate(params or {})
+        if queue is not None or priority is not None:        # 运行级默认（step/任务都没指定时生效）
+            plan = dataclasses.replace(
+                plan,
+                queue=queue if queue is not None else plan.queue,
+                priority=priority if priority is not None else plan.priority,
+            )
+        run_id = f"{RUN_PREFIX}{new_ulid()}"
+        self.transport.set_state(run_id, JobState.RUNNING, task=f"workflow:{name}", **run_meta(plan))
+        self.emit(
+            "workflow.started", workflow=name, run=run_id, nodes=[step.name for step in plan.steps]
+        )
+        self.advance_workflow(run_id, plan=plan)
+        return WorkflowHandle(self.transport, run_id, plan)
+
+    def handle_workflow(self, run_id: str) -> WorkflowHandle:
+        """按运行 id 拿回句柄（重新实例化 plan）。"""
+        return WorkflowHandle(self.transport, run_id, self._load_plan(run_id))
+
+    def resume_workflow(self, run_id: str) -> str:
+        """补偿推进（幂等）：崩溃恢复 / 手工续跑用。返回运行状态。"""
+        return self.advance_workflow(run_id)
+
+    def advance_workflow(self, run_id: str, *, plan: WorkflowPlan | None = None) -> str:
+        """读节点状态 → 入队 ready → 标记 skipped → 写回运行状态。**幂等**。"""
+        if plan is None:
+            plan = self._load_plan(run_id)
+        states, results = self._observe_workflow(run_id, plan)
+        evaluation = plan.evaluate(states)
+        queued: list[str] = []
+        for step in evaluation.ready:
+            node_job_id = plan.node_job_id(run_id, step.name)
+            args, kwargs = plan.payload(step, results)
+            node_task = self.task_for(step.task)
+            # 队列/优先级优先级：step 显式 > 任务自带 > 运行级默认 > config 默认
+            target_queue = (
+                step.queue
+                or (node_task.queue if node_task is not None else None)
+                or plan.queue
+                or self.config.default_queue
+            )
+            node_priority = step.priority
+            if node_priority is None and node_task is not None:
+                node_priority = node_task.priority
+            if node_priority is None:
+                node_priority = plan.priority
+            # 解析顺序同单任务（P2）：step > 任务 > 运行级 > QueueConfig > Config 默认
+            resolved_priority = self.resolve_priority(
+                node_task, queue=target_queue, priority=node_priority
+            )
+            envelope = Envelope(
+                id=node_job_id,
+                task=step.task,
+                args=args,
+                kwargs=kwargs,
+                queue=target_queue,
+                priority=resolved_priority,
+                key=node_job_id,                     # 幂等键：重复推进不会重复执行
+                headers=encode_node_header(run_id, plan.workflow, step.name),
+            )
+            self.transport.enqueue(envelope, queue=target_queue)
+            queued.append(step.name)
+        for name in evaluation.skipped:
+            self.transport.set_state(
+                plan.node_job_id(run_id, name),
+                JobState.SKIPPED,
+                task=plan.by_name[name].task,
+                error="上游节点最终失败（fail-fast），本节点不会执行",
+            )
+        self.transport.set_state(
+            run_id, evaluation.state, task=f"workflow:{plan.workflow}", **run_meta(plan)
+        )
+        if queued:
+            self.emit(
+                "workflow.advanced",
+                workflow=plan.workflow,
+                run=run_id,
+                nodes=queued,
+                state=evaluation.state,
+            )
+        if evaluation.terminal:
+            self.emit(
+                "workflow.succeeded"
+                if evaluation.state == JobState.SUCCEEDED
+                else "workflow.failed",
+                workflow=plan.workflow,
+                run=run_id,
+                state=evaluation.state,
+            )
+        return evaluation.state
+
+    def pending_workflows(self, *, limit: int = 20) -> list[str]:
+        """还没结束的运行 id（worker 维护期补偿推进 / CLI 列表用）。"""
+        if not getattr(self.transport, "supports_job_listing", False):
+            return []
+        records = self.transport.list_jobs(
+            prefix=RUN_PREFIX, states=[JobState.RUNNING], limit=limit
+        )
+        return [record.job_id for record in records]
+
+    def _observe_workflow(
+        self, run_id: str, plan: WorkflowPlan
+    ) -> tuple[dict[str, str], dict[str, Any]]:
+        states: dict[str, str] = {}
+        results: dict[str, Any] = {}
+        for step in plan.steps:
+            record = self.transport.get_state(plan.node_job_id(run_id, step.name))
+            if record is None:
+                continue
+            states[step.name] = record.state
+            if record.has_result:
+                results[step.name] = record.result
+        return states, results
+
+    def _load_plan(self, run_id: str) -> WorkflowPlan:
+        record = self.transport.get_state(run_id)
+        if record is None:
+            raise WorkflowError(f"找不到工作流运行 {run_id}")
+        name = str(record.meta.get(RUN_META_WORKFLOW, ""))
+        definition = self._workflows.get(name)
+        if definition is None:
+            raise ConfigError(f"运行 {run_id} 引用的工作流 {name!r} 未注册")
+        return definition.instantiate(record.meta.get("params") or {})
+
     def add_sink(self, sink: EventSink) -> None:
         """挂事件接收器（测试用 `CollectingSink`；OTel 适配器实现同一协议）。"""
         self._sinks.append(sink)
@@ -238,32 +461,51 @@ class App:
             self._transport = self._make_transport()
         return self._transport
 
+    def _transport_options(self, url: str) -> TransportOptions:
+        return TransportOptions(
+            url=url,
+            codec=self.codec,
+            codec_registry=self._codec_registry,
+            max_message_bytes=self.config.max_message_bytes,
+            idempotency_ttl=self.config.idempotency_ttl,
+            config=self.config,
+        )
+
     def _make_transport(self) -> Transport:
         url = self.config.transport
         if not isinstance(url, str):
             return url
         scheme = url.split("://", 1)[0]
-        if scheme == "memory":
-            transport = MemoryTransport(idempotency_ttl=self.config.idempotency_ttl)
-            transport.set_queue_weights(
-                {name: queue.weight for name, queue in self.config.queues.items()}
-            )
-            return transport
-        if scheme == "sqlite":
-            path = url[len("sqlite://") :]
-            if path.startswith("/"):  # sqlite:///rel.db -> rel.db；sqlite:////abs.db -> /abs.db
-                path = path[1:]
-            if not path:
-                raise ConfigError("sqlite:// 需要文件路径，例如 sqlite:///./taskmq.db")
-            return SqliteTransport(
-                path,
+        # 插件显式覆盖内建（override=True）时优先；否则内建优先（默认行为不变）
+        if scheme in BUILTIN_TRANSPORTS:
+            overriding = transport_factory(scheme)
+            if overriding is not None:
+                return overriding(self._transport_options(url))
+            # 内建 scheme 统一走工厂（App 与 AMQP 的状态侧车共用同一套 URL 解析）
+            return build_transport(
+                url,
                 codec=self.codec,
                 registry=self._codec_registry,
                 idempotency_ttl=self.config.idempotency_ttl,
                 max_message_bytes=self.config.max_message_bytes,
                 queue_weights={name: q.weight for name, q in self.config.queues.items()},
             )
-        raise ConfigError(f"未知的 transport scheme：{scheme}://")
+        # 非内建：查注册表；仍未命中则做一次 entry point 懒发现（标准部署不 import 第三方包）
+        options = TransportOptions(
+            url=url,
+            codec=self.codec,
+            codec_registry=self._codec_registry,
+            max_message_bytes=self.config.max_message_bytes,
+            idempotency_ttl=self.config.idempotency_ttl,
+            config=self.config,
+        )
+        factory = transport_factory(scheme)
+        if factory is None:
+            load_plugins(entry_points=True)
+            factory = transport_factory(scheme)
+        if factory is None:
+            raise ConfigError(unknown_scheme_message(scheme))
+        return factory(options)
 
     def close(self) -> None:
         self._closed = True

@@ -10,19 +10,27 @@ from .base import (
     MessageState,
     QueueStat,
     Transport,
+    WorkerInfo,
 )
+from .factory import build_transport
 from .memory import MemoryTransport
+from .postgres import PostgresTransport
+from .redis import RedisTransport
 from .sqlite import SqliteTransport
 
 __all__ = [
+    "build_transport",
     "Transport",
     "MemoryTransport",
     "SqliteTransport",
+    "RedisTransport",
+    "PostgresTransport",
     "Delivery",
     "JobRecord",
     "JobState",
     "MessageState",
     "QueueStat",
     "DeadLetter",
+    "WorkerInfo",
     "UNSET",
 ]

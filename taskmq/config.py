@@ -78,8 +78,11 @@ class Config:
         elif not hasattr(self.transport, "enqueue"):
             raise ConfigError("transport 必须是 URL 字符串或 Transport 实例")
 
-        if self.pool not in SUPPORTED_POOLS:
-            raise ConfigError(f"未知 pool={self.pool!r}，可选 {SUPPORTED_POOLS}")
+        from .plugins import known_pools, pool_factory
+
+        if self.pool not in SUPPORTED_POOLS and pool_factory(self.pool) is None:
+            known = tuple(SUPPORTED_POOLS) + tuple(sorted(set(known_pools()) - set(SUPPORTED_POOLS)))
+            raise ConfigError(f"未知 pool={self.pool!r}，可选 {known}")
         if self.concurrency < 1:
             raise ConfigError(f"concurrency 必须 >= 1，收到 {self.concurrency}")
         if self.prefetch is not None and self.prefetch < 1:
@@ -90,8 +93,11 @@ class Config:
             raise ConfigError(f"max_message_bytes 太小：{self.max_message_bytes}")
         if self.log_format not in SUPPORTED_LOG_FORMATS:
             raise ConfigError(f"未知 log_format={self.log_format!r}")
-        if self.events not in ("stdout", "null"):
-            raise ConfigError(f'events 可选 "stdout" | "null"，收到 {self.events!r}')
+        if not isinstance(self.events, str) or not self.events:
+            # 具体名字（含插件注册的 sink）由 events.build_sink 在 App 构造时解析并报错 → fail fast
+            raise ConfigError(
+                f'events 必须是 "stdout" | "null" | "otel" 或插件注册的 sink 名，收到 {self.events!r}'
+            )
         if self.result and not self.result_ttl:
             raise ConfigError("配置了 result 就必须给 result_ttl（无 TTL 会被拒绝）")
         if self.result_ttl is not None and self.result_ttl <= 0:

@@ -15,37 +15,57 @@ taskmq call myapp.tasks.send_email --args '["a@b.com","hi"]'   # 同步执行一
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import logging
 import os
 import signal
+import sys
+import threading
 import time
 from collections.abc import Sequence
 from typing import Any
 
 from . import __version__
 from .app import App
-from .errors import TaskMQError, error_text
+from .errors import ConfigError, TaskMQError, error_text
+from .loader import load_app, load_attr
+from .plugins import PLUGINS_ENV, load_plugins
 from .priority import validate_priority
+from .schedule import Schedule
+from .transport.base import JobState
+from .worker.beat import Beat
 from .worker.runner import Worker
+from .workflow import RUN_META_WORKFLOW, RUN_PREFIX
 
 logger = logging.getLogger("taskmq.cli")
 
 
 def _load_app(spec: str) -> App:
-    """`module:attr` -> App 实例。"""
-    if ":" not in spec:
-        raise SystemExit(f"--app 需要 module:attr 形式，收到 {spec!r}")
-    module_name, _, attr = spec.partition(":")
+    """`module:attr` -> App 实例（复用 `loader`，错误转成 CLI 友好的 SystemExit）。"""
     try:
-        module = importlib.import_module(module_name)
-    except ImportError as exc:
-        raise SystemExit(f"无法导入 {module_name}：{exc}") from exc
-    app = getattr(module, attr, None)
-    if not isinstance(app, App):
-        raise SystemExit(f"{spec} 不是 App 实例（拿到 {type(app).__name__}）")
-    return app
+        return load_app(spec)
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _load_object(spec: str) -> Any:
+    """任意 `module:attr` 加载（`--schedule` 用）。"""
+    try:
+        return load_attr(spec)
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _load_schedules(app: App, spec: str | None) -> list[Schedule]:
+    """调度来源：默认用 App 里注册的；也可用 `module:attr` 指向 App 或 Schedule 列表。"""
+    if not spec:
+        return app.schedules
+    obj = _load_object(spec)
+    if isinstance(obj, App):
+        return obj.schedules
+    if isinstance(obj, (list, tuple)) and all(isinstance(item, Schedule) for item in obj):
+        return list(obj)
+    raise SystemExit(f"--schedule {spec} 需要 App 或 Schedule 列表，拿到 {type(obj).__name__}")
 
 
 def _queues(raw: str) -> list[str] | None:
@@ -60,6 +80,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--app",
         default=os.environ.get("TASKMQ_APP"),
         help="App 位置：module:attr（也可用环境变量 TASKMQ_APP）",
+    )
+    parser.add_argument(
+        "--plugins",
+        default="",
+        help=f"逗号分隔的插件模块（也读环境变量 {PLUGINS_ENV}）",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -95,6 +120,14 @@ def _build_parser() -> argparse.ArgumentParser:
     beat.add_argument("--poll", type=float, default=1.0, help="tick 间隔秒")
     beat.add_argument("--once", action="store_true", help="只推进一轮（测试/外部 cron 驱动）")
 
+    workflow = sub.add_parser("workflow", help="DAG 工作流：列表 / 状态 / 补偿推进")
+    workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
+    workflow_sub.add_parser("list", help="运行中的工作流")
+    workflow_status = workflow_sub.add_parser("status", help="某次运行的每节点状态")
+    workflow_status.add_argument("run", help="运行 id（wf-...）")
+    workflow_resume = workflow_sub.add_parser("resume", help="补偿推进（幂等）")
+    workflow_resume.add_argument("run", help="运行 id（wf-...）")
+
     dev = sub.add_parser("dev", help="本地开发：worker + beat 同一进程")
     dev.add_argument("-Q", "--queues", default="", help="逗号分隔；默认 config.default_queue")
     dev.add_argument("-c", "--concurrency", type=int, default=None)
@@ -116,6 +149,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.app:
         parser.error("需要 --app module:attr 或环境变量 TASKMQ_APP")
 
+    if args.plugins:
+        try:                                             # 先加载插件，App 才会看到注册的 scheme/pool/sink
+            modules = [item.strip() for item in args.plugins.split(",") if item.strip()]
+            load_plugins(modules, entry_points=False)
+        except ConfigError as exc:
+            raise SystemExit(str(exc)) from exc
+
     app = _load_app(args.app)
     if args.command == "worker":
         return _cmd_worker(app, args)
@@ -129,6 +169,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_beat(app, args)
     if args.command == "dev":
         return _cmd_dev(app, args)
+    if args.command == "workflow":
+        return _cmd_workflow(app, args)
     parser.error(f"未知命令：{args.command}")
     return 2
 
@@ -169,6 +211,112 @@ def _cmd_worker(app: App, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_beat(app: App, args: argparse.Namespace) -> int:
+    schedules = _load_schedules(app, args.schedule)
+    if not schedules:
+        raise SystemExit("没有调度：用 app.schedule(...) 注册，或 --schedule module:attr 指定")
+    runner = Beat(app, schedules, state_path=args.state, poll_interval=args.poll)
+
+    if args.once:
+        fired = runner.tick()
+        summary = f"fired {len(fired)}" + (f": {', '.join(fired)}" if fired else "")
+        print(summary)
+        runner.close()
+        return 0
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    stopped = {"flag": False}
+
+    def _request_stop(signum: int, frame: Any) -> None:
+        stopped["flag"] = True
+        runner.stop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _request_stop)
+    try:
+        while not stopped["flag"]:
+            runner.tick()
+            time.sleep(max(0.05, args.poll))
+    except KeyboardInterrupt:  # pragma: no cover - 交互式
+        pass
+    finally:
+        runner.close()
+    print(f"beat 退出：fired={runner.fired} skipped={runner.skipped} standby={runner.standby}")
+    return 0
+
+
+def _cmd_dev(app: App, args: argparse.Namespace) -> int:
+    """本地开发：worker + beat 同进程（生产请分开跑，§13）。"""
+    schedules = _load_schedules(app, args.schedule)
+    runner = Beat(app, schedules, state_path=args.state) if schedules else None
+    worker = Worker(
+        app, queues=_queues(args.queues), concurrency=args.concurrency, app_spec=args.app
+    )
+    stopped = threading.Event()
+
+    def _request_stop(signum: int, frame: Any) -> None:
+        stopped.set()
+        worker.stop()
+        if runner is not None:
+            runner.stop()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _request_stop)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    if runner is not None:
+        threading.Thread(target=runner.run_forever, name="taskmq-beat", daemon=True).start()
+    try:
+        while not stopped.is_set():
+            worker.poll()
+            time.sleep(app.config.poll_interval)
+    except KeyboardInterrupt:  # pragma: no cover - 交互式
+        pass
+    finally:
+        if runner is not None:
+            runner.close()
+        worker.close()
+    return 0
+
+
+def _cmd_workflow(app: App, args: argparse.Namespace) -> int:
+    """DAG 工作流的 list / status / resume（docs/design/workflows.md §5）。"""
+    if not app.workflows:
+        raise SystemExit("没有注册工作流：用 @app.workflow(\"...\") 定义")
+
+    if args.workflow_command == "list":
+        if not getattr(app.transport, "supports_job_listing", False):
+            print("(该 transport 不支持 job 枚举，无法列出运行)")
+            return 0
+        runs = app.transport.list_jobs(
+            prefix=RUN_PREFIX, states=[JobState.RUNNING], limit=50
+        )
+        if not runs:
+            print("(没有运行中的工作流)")
+            return 0
+        print("RUNS")
+        for record in runs:
+            name = record.meta.get(RUN_META_WORKFLOW, "?")
+            print(f"  {record.job_id}  workflow={name}  state={record.state}")
+        return 0
+
+    if args.workflow_command == "status":
+        handle = app.handle_workflow(args.run)
+        status = handle.status()
+        print(f"RUN {status.run_id}  workflow={status.workflow}  state={status.state}")
+        for name, node in status.nodes.items():
+            deps = ",".join(handle.plan.by_name[name].upstreams) or "-"
+            print(
+                f"  {name:<16} state={node.state:<10} attempt={node.attempt}"
+                f" deps={deps} task={node.task}"
+            )
+        return 1 if status.state == JobState.FAILED else 0
+
+    state = app.resume_workflow(args.run)
+    print(f"resumed {args.run} -> {state}")
+    return 1 if state == JobState.FAILED else 0
+
+
 def _cmd_status(app: App, args: argparse.Namespace) -> int:
     queues = _queues(args.queues)
     stats = app.transport.queue_stats(queues)
@@ -180,6 +328,28 @@ def _cmd_status(app: App, args: argparse.Namespace) -> int:
             print(
                 f"  {stat.queue:<16} pending={stat.pending:<6}"
                 f" inflight={stat.inflight:<4} dead={stat.dead}"
+            )
+    limitations = getattr(app.transport, "limitations", None) or {}
+    if limitations:
+        print("LIMITATIONS（transport 主动声明的语义降级）")
+        for key, text in limitations.items():
+            print(f"  {key}: {text}")
+    if app.workflows:
+        pending = app.pending_workflows(limit=50)
+        print("WORKFLOWS")
+        print(f"  registered={len(app.workflows)} running={len(pending)}")
+    workers = app.transport.list_workers()
+    if workers:
+        now = time.time()
+        stale_after = max(3 * app.config.heartbeat_interval, 30.0)
+        print("WORKERS")
+        for worker in workers:
+            age = now - worker.heartbeat_at if worker.heartbeat_at else float("inf")
+            flag = "" if worker.alive(now=now, stale_after=stale_after) else "  [stale]"
+            print(
+                f"  {worker.worker_id:<30} queues={','.join(worker.queues) or '-'}"
+                f" pool={worker.pool or '-'} concurrency={worker.concurrency}"
+                f" heartbeat={age:.0f}s ago{flag}"
             )
     if args.by_priority:
         buckets = app.transport.priority_stats(queues)
@@ -208,7 +378,10 @@ def _cmd_dlq(app: App, args: argparse.Namespace) -> int:
 
     priority = args.priority
     if priority is not None:
-        validate_priority(priority, where="dlq replay --priority")
+        try:
+            validate_priority(priority, where="dlq replay --priority")
+        except ConfigError as exc:                     # CLI 给友好提示，而不是 backtrack
+            raise SystemExit(str(exc)) from exc
     if args.id is not None:
         targets = [args.id]
     elif args.all:
@@ -236,7 +409,10 @@ def _cmd_call(app: App, args: argparse.Namespace) -> int:
             args.task, call_args, call_kwargs, queue=args.queue, priority=args.priority
         )
     except TaskMQError as exc:
-        print(f"FAILED: {error_text(exc)}", file=__import__("sys").stderr)
+        print(f"FAILED: {error_text(exc)}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # eager 调用：任务体异常原样抛出，翻译成可读结果
+        print(f"FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, default=str, ensure_ascii=False))
     return 0

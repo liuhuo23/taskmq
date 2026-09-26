@@ -42,9 +42,11 @@ class JobState:
     FAILED = "FAILED"
     REVOKED = "REVOKED"
     EXPIRED = "EXPIRED"
+    #: DAG 专用：上游最终失败导致本节点不会执行（`docs/design/workflows.md`）
+    SKIPPED = "SKIPPED"
 
-    ALL = (PENDING, QUEUED, RUNNING, RETRYING, SUCCEEDED, FAILED, REVOKED, EXPIRED)
-    TERMINAL = (SUCCEEDED, FAILED, REVOKED, EXPIRED)
+    ALL = (PENDING, QUEUED, RUNNING, RETRYING, SUCCEEDED, FAILED, REVOKED, EXPIRED, SKIPPED)
+    TERMINAL = (SUCCEEDED, FAILED, REVOKED, EXPIRED, SKIPPED)
 
 
 class MessageState:
@@ -130,6 +132,23 @@ class DeadLetter:
     reason: str
     deliveries: int
     failed_at: float
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class WorkerInfo:
+    """一个 worker 进程的心跳快照（`taskmq status` 用它显示 worker 列表）。"""
+
+    worker_id: str
+    queues: tuple[str, ...] = ()
+    pool: str = ""
+    concurrency: int = 0
+    started_at: float = 0.0
+    heartbeat_at: float = 0.0
+    meta: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+
+    def alive(self, *, now: float, stale_after: float = 60.0) -> bool:
+        """心跳是否还新鲜（超过 `stale_after` 视为掉线）。"""
+        return self.heartbeat_at > 0 and (now - self.heartbeat_at) <= stale_after
 
 
 class Transport(abc.ABC):
@@ -276,6 +295,62 @@ class Transport(abc.ABC):
     def renew_lease(self, name: str, owner: str, ttl: float) -> bool:
         """续租；不是自己持有或已过期返回 False。"""
         raise TransportError(f"{type(self).__name__} 不支持命名租约")
+
+    # -------------------------------------------------------------- worker 心跳
+    #: 该 transport 是否支持 worker 注册表（`taskmq status` 的 worker 列表）
+    supports_workers: bool = False
+
+    #: 是否支持枚举 job（DAG 工作流的补偿推进 / `taskmq workflow list` 需要）。
+    #: 不支持时 workflow 功能**启动即报错**，而不是静默不推进（docs/design/workflows.md D8）。
+    supports_job_listing: bool = False
+
+    def list_jobs(
+        self,
+        *,
+        prefix: str | None = None,
+        states: Sequence[str] | None = None,
+        limit: int = 100,
+    ) -> list[JobRecord]:
+        """按 job id 前缀 / 状态列出 job（新的在前）。不支持时抛 `TransportError`。"""
+        raise TransportError(f"{type(self).__name__} 不支持 job 枚举（supports_job_listing=False）")
+
+    #: 主动声明的**语义降级**（键=能力/场景名，值=说明）。`taskmq status` 会打印；
+    #: 一致性测试套件（`taskmq.testing.transport_conformance`）据此跳过对应场景——
+    #: 让"能力不对等"显式可见，而不是假装一致（docs/design/plugins.md D7）。
+    limitations: Mapping[str, str] = {}
+
+    def register_worker(
+        self,
+        worker_id: str,
+        *,
+        queues: Sequence[str] = (),
+        pool: str = "",
+        concurrency: int = 0,
+        meta: Mapping[str, Any] | None = None,
+        now: float | None = None,
+    ) -> None:
+        """登记一个 worker 并写首次心跳。"""
+        raise TransportError(f"{type(self).__name__} 不支持 worker 注册表")
+
+    def heartbeat_worker(
+        self,
+        worker_id: str,
+        *,
+        meta: Mapping[str, Any] | None = None,
+        now: float | None = None,
+    ) -> None:
+        """刷新心跳（worker 每 `heartbeat_interval` 调一次）。"""
+        raise TransportError(f"{type(self).__name__} 不支持 worker 注册表")
+
+    def deregister_worker(self, worker_id: str) -> None:
+        """优雅退出时注销（幂等）。"""
+        raise TransportError(f"{type(self).__name__} 不支持 worker 注册表")
+
+    def list_workers(
+        self, *, stale_after: float = 60.0, now: float | None = None
+    ) -> list[WorkerInfo]:
+        """列出已知 worker（含心跳时间；不支持时返回空列表）。"""
+        return []
 
     # ------------------------------------------------------------------ 生命周期
     def close(self) -> None:

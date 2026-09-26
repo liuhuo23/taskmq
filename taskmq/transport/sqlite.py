@@ -31,6 +31,7 @@ from .base import (
     MessageState,
     QueueStat,
     Transport,
+    WorkerInfo,
 )
 
 __all__ = ["SqliteTransport"]
@@ -84,6 +85,17 @@ CREATE TABLE IF NOT EXISTS leases (   -- concurrency_key 互斥 / beat 选主
   owner      TEXT NOT NULL,
   expires_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS workers (  -- 心跳：taskmq status 的 worker 列表
+  id           TEXT PRIMARY KEY,
+  queues       TEXT NOT NULL DEFAULT '',
+  pool         TEXT NOT NULL DEFAULT '',
+  concurrency  INTEGER NOT NULL DEFAULT 0,
+  started_at   REAL NOT NULL,
+  heartbeat_at REAL NOT NULL,
+  meta         TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_worker_heartbeat ON workers(heartbeat_at);
 """
 
 _MESSAGE_COLUMNS = (
@@ -96,6 +108,8 @@ class SqliteTransport(Transport):
     """单文件 SQLite transport。`clock` 可注入以便测试租约/退避。"""
 
     supports_leases = True
+    supports_workers = True
+    supports_job_listing = True
 
     def __init__(
         self,
@@ -715,6 +729,121 @@ class SqliteTransport(Transport):
                 (JobState.QUEUED, now, row["job_id"]),
             )
             return True
+
+    # -------------------------------------------------------------- worker 心跳
+    def register_worker(
+        self,
+        worker_id: str,
+        *,
+        queues: Sequence[str] = (),
+        pool: str = "",
+        concurrency: int = 0,
+        meta: Mapping[str, Any] | None = None,
+        now: float | None = None,
+    ) -> None:
+        moment = self._now() if now is None else float(now)
+        with self._lock, self._tx():
+            self._register_worker_locked(worker_id, queues, pool, concurrency, meta, moment)
+
+    def _register_worker_locked(
+        self,
+        worker_id: str,
+        queues: Sequence[str],
+        pool: str,
+        concurrency: int,
+        meta: Mapping[str, Any] | None,
+        moment: float,
+    ) -> None:
+        """`_tx()` 里调用（`_tx` 不可重入，别在事务中再开事务）。"""
+        self._conn.execute(
+            "INSERT INTO workers(id, queues, pool, concurrency, started_at, heartbeat_at, meta)"
+            " VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(id) DO UPDATE SET queues=excluded.queues, pool=excluded.pool,"
+            " concurrency=excluded.concurrency, heartbeat_at=excluded.heartbeat_at",
+            (
+                worker_id,
+                ",".join(queues),
+                pool,
+                int(concurrency),
+                moment,
+                moment,
+                self._dump_meta(meta or {}),
+            ),
+        )
+
+    def heartbeat_worker(
+        self,
+        worker_id: str,
+        *,
+        meta: Mapping[str, Any] | None = None,
+        now: float | None = None,
+    ) -> None:
+        moment = self._now() if now is None else float(now)
+        with self._lock, self._tx():
+            row = self._conn.execute("SELECT meta FROM workers WHERE id=?", (worker_id,)).fetchone()
+            if row is None:
+                self._register_worker_locked(worker_id, (), "", 0, meta, moment)
+                return
+            merged = self._load_meta(row["meta"])
+            merged.update(meta or {})
+            self._conn.execute(
+                "UPDATE workers SET heartbeat_at=?, meta=? WHERE id=?",
+                (moment, self._dump_meta(merged), worker_id),
+            )
+
+    def deregister_worker(self, worker_id: str) -> None:
+        with self._lock, self._tx():
+            self._conn.execute("DELETE FROM workers WHERE id=?", (worker_id,))
+
+    def list_workers(
+        self, *, stale_after: float = 60.0, now: float | None = None
+    ) -> list[WorkerInfo]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM workers ORDER BY heartbeat_at DESC, id"
+            ).fetchall()
+        return [
+            WorkerInfo(
+                worker_id=str(row["id"]),
+                queues=tuple(filter(None, str(row["queues"]).split(","))),
+                pool=str(row["pool"]),
+                concurrency=int(row["concurrency"]),
+                started_at=float(row["started_at"]),
+                heartbeat_at=float(row["heartbeat_at"]),
+                meta=self._load_meta(row["meta"]),
+            )
+            for row in rows
+        ]
+
+    def list_jobs(
+        self,
+        *,
+        prefix: str | None = None,
+        states: Sequence[str] | None = None,
+        limit: int = 100,
+    ) -> list[JobRecord]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if prefix:
+            clauses.append("job_id LIKE ?")
+            params.append(f"{prefix}%")
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            clauses.append(f"state IN ({placeholders})")
+            params.extend(states)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(0, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT job_id FROM jobs{where} ORDER BY updated_at DESC LIMIT ?", params
+            ).fetchall()
+        # 列表只取 id，再走 get_state（复用同一套解码逻辑；维护路径量小，N+1 可接受）
+        records = []
+        for row in rows:
+            record = self.get_state(str(row["job_id"]))
+            if record is not None:
+                records.append(record)
+        return records
 
     # ------------------------------------------------------------------ 关闭
     def close(self) -> None:

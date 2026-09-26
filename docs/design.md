@@ -475,9 +475,35 @@ COMMIT;
 |---|---|---|
 | `memory://` | Phase 0 | 单测、`eager` 模式、本地试跑 |
 | `sqlite://` | Phase 0 | 零依赖默认、单机生产 |
-| `redis://` | Phase 1 | 高吞吐、原生阻塞弹出（BRPOP/BZPOPMIN） |
+| `redis://` | Phase 1 ✅ | 高吞吐；零依赖 RESP 客户端 + Lua 原子操作（见下） |
 | `postgres://` | Phase 2 | 已经有 PG 的团队：SKIP LOCKED + LISTEN/NOTIFY |
-| `amqp://` | Phase 2 | 需要路由/联邦的场景 |
+| `postgresql://` | Phase 2 ✅ | 多机 + 强一致：`FOR UPDATE SKIP LOCKED` 原子 claim、`ON CONFLICT` CAS 租约、幂等键唯一约束；需要 `taskmq[postgres]`（psycopg） |
+| `amqp://`（RabbitMQ） | Phase 2 ✅ | 投递走 broker（`x-max-priority` + per-message TTL/DLX 延迟 + DLX 死信），**状态走侧车** `?state=sqlite:///…`（AMQP 无 KV/DAG 索引）；跨队列不做全局严格优先（已声明降级）；需要 `taskmq[amqp]` |
+| `<自研>://` | **插件** | 第三方后端经注册表接入，核心零改动（[design/plugins.md](design/plugins.md)） |
+
+**Redis transport 实现要点**（`taskmq/transport/redis.py` + `taskmq/redis_client.py`）：
+
+- **零第三方依赖**：自带极简 RESP2 客户端（`socket` + 一把锁），`EVAL` 走 Lua；
+- **键前缀隔离**：URL 支持 `redis://host:port/db?prefix=app1`，所有操作只碰自己的前缀，
+  不会 FLUSH 别人的库（测试用随机前缀互不干扰）；
+- **优先级**：ready ZSET 的 `score = -priority * 2**40 + seq`。取件规则 = 先定「所有队头里的最高
+  优先级档位」，档内再按 `served/weight` 最小者取（平手按队列名）——即「跨档严格优先 + 档内
+  平级加权轮询」，与 memory/sqlite 一致（[redis-cluster.md](design/redis-cluster.md)）；
+- **可见性统一**：延迟/退避/让位/重投都进 delayed ZSET（`score = visible_at`），reserve 先 promote 到期的；
+  **过期在 promote/claim 时判定**，因此 `reap_expired_jobs()` 在 Redis 上是 no-op（返回 0）；
+- **原子性**：claim、ack/nack/dead/defer/extend/yield、孤儿回收、命名租约默认用 Lua 一次往返；
+  **没有 Lua 也能跑**（见下）；
+- **无 Lua 回退**：启动时探测 `EVAL`。很多托管 Redis 会禁用/重命名 EVAL（安全合规），
+  这时自动切到 **`WATCH/MULTI/EXEC` 乐观事务**——语义与 Lua 路径一致，代价只是争抢时多几个往返
+  （乐观重试）。开关：`?lua=off` 强制回退、`?lua=on` 要求必须有 Lua（没有就启动即报错）、不写则自动探测；
+  当前模式在 `transport.lua_enabled` 上可查。测试**两种模式各跑一遍全部用例**，另有自动探测与人工对拍用例。
+- **Cluster（`?cluster=1`）**：键按逻辑队列打 hash tag（`{prefix}{q}:ready`），单队列的
+  promote/claim 走显式 KEYS 的 Lua（一次往返、仍是原子的）；跨队列取件跨 slot，没有单次原子可言，
+  降级为「每队列各取一次 + Python 侧按 band/权重选」，并在 `cluster_limitations` 里声明
+  （一致性套件据此跳过 `global_priority`）。客户端是自带的 `RedisClusterClient`：
+  CRC16 算 slot + `CLUSTER SLOTS` 拓扑 + `MOVED`/`ASK` 跟随，同槽校验在发命令前就拦下
+  （Redis 7 的 Lua 会放行跨槽访问，静默写错节点）。见 [redis-cluster.md](design/redis-cluster.md)；
+- **租约按队列**：`{prefix}leases:{queue}` ZSET（score = lease_until），孤儿回收逐队列扫描。
 
 ---
 
@@ -529,7 +555,11 @@ stateDiagram-v2
 - ✅ 已实现：worker 每 `min(heartbeat_interval, lease/3)`（下限 50ms）续租**在途**任务的租约。
   没有这一步，跑得比 `lease` 还久的任务会被**自家 reap 判成孤儿并重投**——at-least-once 下就是重复执行
   （实测：lease=0.3s 的 1s 任务被重投 14 次后超时；`tests/test_acceptance.py::test_long_running_task_lease_is_renewed` 守住）。
-- ⏳ 待办：`workers` 表心跳与 `taskmq status` 的 worker 列表（CLI 目前只显示队列深度）。
+- ✅ **已实现**：memory / sqlite（`workers` 表 + heartbeat 索引）/ redis（`{prefix}worker:{id}` hash +
+  `workers` ZSET）三家 transport 都支持 `register_worker / heartbeat_worker / deregister_worker / list_workers`；
+  worker 在首次 poll 时登记，之后每 `heartbeat_interval` 刷新，**优雅退出主动注销**；
+  `taskmq status` 输出 `WORKERS` 段（queues / pool / concurrency / 心跳年龄，超过 `max(3×interval, 30s)` 标 `[stale]`）。
+  worker 侧心跳失败只记 debug 日志，绝不打死 worker。
 - 租约默认 `lease = timeout * 2 + 30s`；任何进程都可以调用 `reap_expired_leases()`（幂等，用 `UPDATE ... WHERE state='reserved' AND lease_until < ?` 实现），把死掉 worker 的消息重新可见。
 - 超过 `max_deliveries` 的消息进 DLQ，并记录 `last_error` 和 `claim history`。
 
@@ -631,6 +661,9 @@ Config(result="sqlite:///./taskmq.db", result_ttl=3600)
 - 失败信息包含远端 traceback 字符串，`h.get()` 抛 `RemoteError`（保留 `__cause__` 语义之外的原始 traceback 文本）。
 - **不要拿 backend 当队列**：明确写进文档。工作流依赖走调度器（Phase 2），不靠轮询 backend。
 - TTL 清理由任意进程的 `reap` 顺带完成，不需要额外守护进程。
+- **实现现状**：结果与状态同源落在 transport 里（SQLite 的 `jobs` 表 / Redis 的 `{prefix}job:{id}` hash），
+  没有拆出独立的 `ResultBackend` 接口 —— 好处是不会出现「状态说成功、结果丢了」的两套一致性问题；
+  真要换后端（比如 S3 存大结果）再按 §12 的接口拆。
 
 ---
 
@@ -645,11 +678,19 @@ app.schedule(
 )
 ~~~
 
-- 独立进程 `taskmq beat`，也可 `taskmq dev` 与 worker 合并（仅开发）。
-- **选主**：所有 beat 副本抢 `leases` 表的 `__beat__` 行，租约 30s 自动续期；抢占失败者进入待命。多副本部署不会重复触发（Celery beat 的经典坑）。
-- **misfire 策略**显式声明：`skip`（默认，错过了就跳过）/ `run_once`（补一次，不补一堆）。
-- 时区用 `zoneinfo`，cron 按本地时区计算，DST 边界行为单测覆盖。
-- 调度定义可以放代码里（`app.schedule`），也可以放 `taskmq_schedule.py` 由 `taskmq beat --schedule` 加载（生产推荐代码化，可 review、可测试）。
+- ✅ 独立进程 `taskmq beat [--once] [--poll N]`，也可 `taskmq dev` 与 worker 合并（仅开发）。
+- ✅ **选主**：所有 beat 副本抢 transport 的 `__beat__` 命名租约（TTL 30s，每 tick 续租；
+  **优雅退出主动释放**，follower 立刻接手）；抢不到者进入待命、绝不触发。多副本不会重复触发
+  （Celery beat 的经典坑）。transport 不支持命名租约时降级单副本并告警。
+- ✅ **misfire 策略**显式声明：`skip`（默认，错过多次就跳过）/ `run_once`（补一次，不补一堆）。
+- ✅ 时区用 `zoneinfo`；cron 按本地时区计算，DST 边界（美东 2026-03-08 拨快）单测覆盖。
+- ✅ cron 解析用标准库自己实现：5 字段 + `@daily` 等别名，支持 `*` / `a` / `a-b` / `a,b` / `*/n` / `a-b/n`；
+  weekday `0`（或 `7`）= 周日；day-of-month 与 day-of-week 同时限定时按 Vixie 规则取**或**。
+- ✅ 调度定义放代码里（`app.schedule(cron(...), every(...))`），或用 `--schedule module:attr`
+  指向 App / Schedule 列表（生产推荐代码化，可 review、可测试）。
+- ✅ **状态**：每条调度的「上次观测时间」落在 JSON 文件（`--state`，默认 `taskmq.beat.json`），
+  只有 leader 写；**首次部署只记基准不补跑**，避免刚上线刷一堆任务。
+- ⏳ 待办：多副本跨主机需要共享 transport（SQLite 共享盘 / Redis）；beat 状态未来可以搬进 transport 表。
 
 ---
 
@@ -670,7 +711,12 @@ app.schedule(
 | `transport.error` | op, error, retry_in |
 
 - 所有事件都带 `job_id` 和 `trace`，可与 OpenTelemetry 的 traceparent 串起来。
-- OTel 集成是可选适配器（`taskmq[otel]`），不是 core 依赖。
+- ✅ **已实现**（`taskmq/otel.py`，可选依赖 `taskmq[otel]`，core 不依赖）：
+  `task.started` → `start_span("task <name>")`，属性用标准 messaging 语义约定
+  （`messaging.system=taskmq` / `destination.name` / `message.id` / `message.type`）+ `taskmq.attempt/priority/worker`；
+  `task.succeeded|failed|retrying` → 结束 span 并设状态（retrying 记 ERROR + `taskmq.will_retry`）；
+  `task.deferred` 等其它事件 → 挂成当前 span 的 event。
+  用法：`Config(events="otel")` 或 `app.add_sink(OtelEventSink(tracer))`（可注入 tracer，便于测试/自定义 exporter）。
 
 ### 14.2 CLI 状态
 
@@ -824,17 +870,32 @@ def test_worker_crash_redelivery():
 
 - [x] `processes` / `asyncio` 池 + 硬超时：`ProcessPool`（硬超时任务独立子进程可强杀，其余复用进程池）
       / `AsyncPool`（单事件循环 + 线程槽位）；async 任务与非 asyncio 池的混用在启动期 `ConfigError`
-- [ ] `RedisTransport` + `RedisResultBackend`（本机无 redis-server，需在有服务的环境验证）
-- [ ] `beat` + lease 选主 + misfire 策略（`leases` 原语已就绪）
+- [x] `RedisTransport`：零依赖 RESP + Lua 原子 claim/状态转换/孤儿回收/命名租约，键前缀隔离；
+      结果与 meta 存在 `{prefix}job:{id}`（独立 `RedisResultBackend` 未拆，理由见 §12）。已对 Redis 7.0.5 实测
+- [x] `workers` 心跳表 + `taskmq status` 的 worker 列表（见 §10.4）
+- [x] **PostgreSQL transport**（`taskmq/transport/postgres.py`）：`FOR UPDATE SKIP LOCKED` 原子 claim
+      （多机并发零重复、零阻塞）、`ON CONFLICT … WHERE` 单条 CAS 命名租约、幂等键唯一约束、
+      worker 注册表与 `list_jobs`（DAG 可用）；一致性套件 **16/16 通过、零降级声明**；表前缀 `?prefix=` 隔离
+- [x] **AMQP transport（RabbitMQ）**（`taskmq/transport/amqp.py`）：投递走 broker（`x-max-priority` 排序、
+      per-message TTL + DLX 延迟回投、DLX 死信、未确认重投），**状态走侧车** `?state=<transport url>`
+      （AMQP 没有 KV：job 状态/DAG 索引/命名租约/worker 表都由侧车提供，缺 `state=` 直接报错）；
+      无锁帧里如实声明降级：跨队列不做全局严格优先、`priority_stats` 为空、`reap_expired_jobs` 是 no-op；
+      一致性套件 15/16（`global_priority` 按声明跳过），含 DAG 端到端
+- [x] OTel 适配器 `taskmq/otel.py` + `events="otel"`（见 §14.2）
+- [x] `beat` + lease 选主 + misfire：`cron()`/`every()`（标准库 cron 解析 + zoneinfo）、
+      `taskmq beat`/`dev`、`__beat__` 租约选主（优雅退出释放）、`skip`/`run_once`、JSON 状态文件
 - [x] 幂等键（Phase 0）、`concurrency_key`、`rate_limit`：命名租约 + token bucket + `defer`（不消耗 `deliveries`）
 - [x] 结构化事件：`Config.events`（stdout/null）+ `EventSink` 协议 + `CollectingSink`；事件含
-      `task.submitted/started/succeeded/failed/retrying/deferred`（OTel 适配器待补）
-- [ ] 覆盖率 ≥ 90%，崩溃场景确定性测试
+      `task.submitted/started/succeeded/failed/retrying/deferred` + `worker.started/stopped`；OTel 适配器见 §14.2
+- [x] 覆盖率 ≥ 90%（当前 **93%**，`make coverage`）+ 崩溃场景确定性测试（`os._exit(9)` 租约恢复、
+      ack 幂等、迟到 ack `LeaseLost`、Redis 两种模式各跑一遍）
 - **验收**：单机 4 worker × 8 并发压测达标；双 beat 副本无重复触发。
 
 ### Phase 2 — 进阶
 
-- [ ] 原生 DAG 工作流（替代 chain/group/chord）🟡 暂定放这里（§20-7）
+- [x] **原生 DAG 工作流**（替代 chain/group/chord）：`taskmq/workflow.py` + worker 侧依赖推进（事件 + 维护期补偿）
+      + `taskmq workflow list/status/resume` + `supports_job_listing` 能力位；16 例测试，见
+      [design/workflows.md](design/workflows.md)（v1.0）
 - [ ] `postgres://` transport（SKIP LOCKED）、`amqp://`
 - [ ] 分布式限流、优先级公平调度
 - [ ] 任务级中间件（审计、多租户、权限）
@@ -858,7 +919,7 @@ def test_worker_crash_redelivery():
 | 4 | 默认投递语义 | ✅ **at-least-once**（成功才 ack）+ 可见性租约 + `max_deliveries` + DLQ；不承诺 exactly-once，重复用 `key` 幂等 |
 | 5 | 默认序列化 | ✅ **`msgspec`**（core 唯一第三方依赖）；`serializer="json"` 退回纯标准库 |
 | 6 | SQLite 跨主机 | ✅ 一期只支持**同机多进程 + 共享盘（NFS/SMB）**；跨主机走 Redis（Phase 1）/ PG（Phase 2）；对象存储（OSS/S3）**不做一期 transport**，列为 Phase 2+ 候选 |
-| 7 | 工作流优先级 | 🟡 **暂定：Phase 0/1 只做单任务，DAG 放 Phase 2**（本轮未回复，按建议执行，可随时改） |
+| 7 | 工作流优先级 | ✅ Phase 2 落地**原生 DAG**（声明式、依赖推进、不轮询）：[design/workflows.md](design/workflows.md) |
 | 8 | Celery 兼容层 | ✅ **做**，但不是默认 drop-in：可选包 `taskmq-celery` 提供 `celery` 命名空间 shim，Phase 2 交付，便于存量项目快速切换 |
 | 9 | 优先级语义 | ✅ **方案 D**：全局严格优先 + **未开始预留让位**（`yields` 独立计数）+ 平级队列轮询。G1 空闲即最高 / G2 未开始让位 / G3 不打断运行中；数值域 `-9..9`；aging 与兜底 Phase 2。详见 [priority.md](design/priority.md) §10（P1–P19） |
 
@@ -871,9 +932,37 @@ def test_worker_crash_redelivery():
 1. ✅ 优先级设计已定稿：[priority.md](design/priority.md) v1.0（P1–P19 全部 ✅ = 方案 D + 让位）。
 2. ✅ §20 决策已确认（仅第 7 条工作流优先级为 🟡 暂定）。
 3. ✅ **Phase 0 完成**：`protocol` / `transport.base` / `transport.memory` / `transport.sqlite` / `App` / `Task`（类式 + `bind=True` + 钩子）/ `Worker`（含 G1–G3 插队）/ `testing` / `cli` 全部落地，**Python 3.10 上 `make check`（ruff + mypy + pyright + 55 测试）全绿**。
-4. 🚧 Phase 1 进行中：`concurrency_key`/`rate_limit`、`结构化事件`、**`processes`/`asyncio` 池 + 硬超时**
-   已完成；下一步 `beat` 选主（`leases` 已就绪，还差 cron 解析）、Redis transport、OTel 适配、覆盖率 ≥ 90%。
+4. 🚧 Phase 1 进行中：`concurrency_key`/`rate_limit`、`结构化事件`、`processes`/`asyncio` 池 + 硬超时、
+   **`beat` + 选主 + misfire**、**`RedisTransport`**、**`workers` 心跳**、**OTel 适配**、**覆盖率 93%** 已完成
+   —— **Phase 1 收尾**。✅ 插件机制（自注册后端）已落地：[plugins.md](design/plugins.md) v1.0。
+   ✅ Phase 2 第一刀 **原生 DAG 工作流**已落地（[workflows.md](design/workflows.md) v1.0）。
+   ✅ Phase 2 第二/三/四刀：`amqp://`（状态侧车）、Redis 平级加权轮询、**Redis Cluster**
+   （`?cluster=1`，[redis-cluster.md](design/redis-cluster.md)）已落地。
+   下一步 Phase 2：Celery 兼容 shim（`taskmq-celery`，canvas → DAG 映射）、独立 `result=` 后端（插件点已预留）。
 4. 🚧 分册拆分：已落地 `priority.md`；`protocol.md` / `transport.md` / `worker.md` / `scheduler.md` / `testing.md` 待拆。
 
+## 22. 扩展机制（插件 / 自注册后端）
+
+第三方后端（例如阿里云 RocketMQ、公司内部 MQ）**不改 taskmq 源码**即可接入，三条路径：
+
+1. **打包 + entry point**：插件包声明 `[project.entry-points."taskmq.plugins"] rocketmq = "taskmq_rocketmq"`，
+   用户只写 `Config(transport="rocketmq://...")`；
+2. **私有环境显式加载**：`app.load_plugins(["mycompany.mq"])` / `TASKMQ_PLUGINS=...` / CLI `--plugins`；
+3. **直接给实例**：`Config(transport=<Transport 实例>)`（现有能力，框架不干预生命周期）。
+
+规则：**内建 scheme 优先**（插件要覆盖必须显式 `override=True`）；未命中时对 entry points 做**懒发现**
+（标准部署不 import 任何第三方包，启动开销不变）；插件必须**如实声明** `supports_leases` /
+`supports_workers`，**缺能力启动即 `ConfigError`**，不留到运行时；
+`taskmq.testing.transport_conformance()` 让第三方后端自证语义与内建一致（内建三家也跑同一套件，
+避免"给别人的契约"与"自己跑的契约"脱节）。插件可依赖的公开契约见 §7 稳定性边界。
+
+**已落地（v1.0，D1–D7 全部按建议确认）**：`taskmq/plugins.py` 注册表 + entry point 懒发现、
+`App.load_plugins`/`App.plugins`、`--plugins`/`TASKMQ_PLUGINS`、codec/sink（+ pool 预留）扩展点、
+`ChildTask.plugins` 子进程透传、15 个场景的 `taskmq.testing.transport_conformance()`、
+`Transport.limitations` + `status` 展示，以及示例插件 [examples/plugin_rocketmq](../examples/plugin_rocketmq)。
+设计稿与实现纪要：[design/plugins.md](design/plugins.md)。
+
+---
+
 > 文档版本 v0.2（2025）· 所有设计取舍以「可预测、可调试、失败可见」为最高优先级。
-> 分册：[**priority.md**](design/priority.md)（已定稿 v1.0）· [**tasks.md**](design/tasks.md)（草案，待拍板 T1–T8）；待拆：`protocol.md` / `transport.md` / `worker.md` / `scheduler.md` / `testing.md`。
+> 分册：[**priority.md**](design/priority.md)（v1.0）· [**tasks.md**](design/tasks.md)（草案 T1–T8）· [**plugins.md**](design/plugins.md)（v1.0）· [**workflows.md**](design/workflows.md)（v1.0）；待拆：`protocol.md` / `transport.md` / `worker.md` / `scheduler.md` / `testing.md`。

@@ -2,7 +2,7 @@
 
 零外部服务就能跑起来、投递语义可预测、配置显式、调试不用猜的 Python 分布式任务队列。
 
-- 不需要 Redis / RabbitMQ / 外部数据库：`memory://`（Phase 0 已实现）、`sqlite://`（Phase 0 下一步）
+- 不需要 Redis / RabbitMQ / 外部数据库：`memory://`、`sqlite://`、`redis://`（都可用；redis 自带零依赖 RESP 客户端）
 - 默认 **at-least-once**（成功才 ack）+ 可见性租约 + DLQ
 - **优先级插队**：全局严格优先 + **未开始预留让位**（`yields` 独立计数）+ 平级队列轮询
 - 默认执行池 **threads**，CPU 密集显式切 `processes`
@@ -20,13 +20,14 @@ uv run ruff check taskmq tests
 uv run mypy             # 类型检查（CI 口径）
 uv run pyright          # 类型检查（Pylance / 编辑器口径）
 make check              # = lint + typecheck(mypy + pyright) + test
+make coverage           # 覆盖率（当前 93%，门限目标 ≥ 90%）
 ```
 
 说明：本仓库的 `uv.toml` 把 uv 的 cache 放在工程内（`.uv-cache/`），`Makefile` 通过
 `UV_PYTHON_INSTALL_DIR` 把托管 Python 也放在工程内（`.uv-python/`），因此在 HOME 不可写的
 受限沙箱里也能直接用；普通开发机不受影响。新增依赖用 `uv add <pkg>`，不要手改 virtualenv。
 
-## 当前状态（Phase 0 进行中）
+## 当前状态（Phase 1 收尾：覆盖率 93%，202 个测试）
 
 已实现：
 
@@ -36,18 +37,173 @@ make check              # = lint + typecheck(mypy + pyright) + test
 | `taskmq/transport/base.py` | Transport 抽象 + 不变量 + 插队原语（`peek_max_priority` / `yield_reservation` / `next_visible_at`） |
 | `taskmq/transport/memory.py` | 内存 transport：优先级定档 + 档内加权轮询、租约重投、DLQ、幂等键、让位 |
 | `taskmq/transport/sqlite.py` | **SQLite transport**：WAL + `BEGIN IMMEDIATE` 原子 claim、让位、DLQ、幂等键、结果/meta 持久化 |
-| `taskmq/cli.py` | CLI：`worker` / `status --by-priority` / `dlq list\|replay` / `call`（入口 `taskmq`） |
+| `taskmq/cli.py` | CLI：`worker` / `status --by-priority`（含 `WORKERS` 段）/ `dlq list\|replay` / `beat` / `dev` / `call`（入口 `taskmq`） |
 | `taskmq/app.py` `task.py` | `App` / `@task` / `TaskHandle` / `TaskContext` / `Retry`、优先级解析、eager；**可继承的 `Task` 基类 + `bind=True` + 生命周期钩子** |
 | `taskmq/worker/` | `solo` / `threads` / **`asyncio`** / **`processes`** 池、reserve–start 耦合、让位（G2）、不打断运行中（G3）；限流 / `concurrency_key` 串行；`hard_timeout` 可强杀 |
 | `taskmq/ratelimit.py` | `"100/m"` token bucket（worker 内），超限走 `defer`（不消耗投递次数） |
-| `taskmq/events.py` | 结构化事件：`Config.events="stdout"`、`EventSink` 协议、`CollectingSink`（测试） |
-| `taskmq/testing.py` | `worker_for` / `run_until_idle` / `eager_app` |
+| \`taskmq/events.py\` | 结构化事件：\`Config.events="stdout"|\"null\"|\"otel\"\`、\`EventSink\` 协议、\`CollectingSink\`（测试） |
+| \`taskmq/otel.py\` | **OTel 适配器**（可选依赖 \`taskmq[otel]\`）：任务 span + 标准 messaging 语义约定 |
+| \`taskmq/transport/redis.py\` \`redis_client.py\` | **Redis transport**：零依赖 RESP2 客户端 + Lua 原子操作；禁用 Lua 时自动回退 \`WATCH/MULTI/EXEC\`；\`?cluster=1\` 走 slot 路由（hash tag 分槽 + MOVED/ASK） |
+| \`taskmq/transport/postgres.py\` | **PostgreSQL transport**：\`FOR UPDATE SKIP LOCKED\` 原子 claim（多机零重复、零阻塞）、表前缀隔离、一致性套件 16/16 |
+| \`taskmq/schedule.py\` \`worker/beat.py\` | **beat**：cron/interval（zoneinfo、DST 覆盖）、\`__beat__\` 租约选主、misfire、JSON 状态文件 |
+| \`taskmq/worker/runner.py\` | worker 心跳注册表（memory/sqlite/redis 三家），\`status\` 可看 worker 列表与心跳年龄 |
+| \`taskmq/testing.py\` | \`worker_for\` / \`run_until_idle\` / \`eager_app\` |
 
 > 类型检查跑**两个引擎**：`mypy`（CI 口径）与 `pyright`（Pylance/编辑器口径）。
 > 两者对 `Any` 的推断规则不同，只跑一个会出现「本地绿、编辑器红」（见 `TaskHandle.wait` 的 `float | None` 案例）。
 
-**Phase 0 验收已达成**（`tests/test_acceptance.py`）：1000 任务 × 2 worker 无重复执行、worker 进程被 `os._exit(9)`
-真杀掉后租约回收重投、超限进 DLQ 并重放。下一步 Phase 1：`processes`/`asyncio` 池、Redis transport、beat、结构化事件。
+**验收**：Phase 0（`tests/test_acceptance.py`）1000 任务 × 2 worker 无重复执行、worker 被 `os._exit(9)`
+真杀掉后租约回收重投、超限进 DLQ 并重放；Phase 1 加上了池/硬超时、限流、`concurrency_key`、
+beat 选主、Redis transport（Lua 与无 Lua 两种模式各跑一遍全部用例）、worker 心跳、OTel 适配。
+Phase 2 已完成：**原生 DAG 工作流**、**PostgreSQL transport**、**`amqp://`**、**Redis 档内加权轮询与 Cluster（`?cluster=1`）**。下一步：Celery 兼容 shim（`taskmq-celery`）、独立 `result=` 后端。
+
+## transport 选择
+
+| URL | 适用 | 说明 |
+|---|---|---|
+| `memory://` | 单测 / eager | 进程内，零依赖 |
+| `sqlite:///./taskmq.db` | 单机生产 / 共享盘 | WAL + `BEGIN IMMEDIATE` 原子 claim；同机多进程一等公民 |
+| `redis://127.0.0.1:6379/1?prefix=app1` | 高吞吐 / 多机 | 零依赖 RESP 客户端 + Lua 原子操作；`prefix` 隔离键空间；`?cluster=1` 支持 Redis Cluster |
+| `postgresql://user:pass@host:5432/db?prefix=app1_` | 多机 / 强一致 | `FOR UPDATE SKIP LOCKED` 原子 claim + `ON CONFLICT` CAS 租约；需要 `taskmq[postgres]` |
+| `amqp://user:pass@host:5672/vhost?state=sqlite:///./taskmq.db` | 已有 RabbitMQ / 需要路由 | `x-max-priority` 排序 + TTL/DLX 延迟 + DLX 死信；**状态（job/租约/worker/DAG 索引）必须给 `state=` 侧车**；需要 `taskmq[amqp]` |
+
+```python
+app = App(Config(transport="redis://127.0.0.1:6379/1?prefix=myapp:"))
+```
+
+Redis 上：score = `-priority * 2**40 + seq`，取件规则 = 先定所有队头里的最高优先级档位，
+档内按 `served/weight` 加权轮询（权重来自 `Config.queues[name].weight`）、同级 FIFO；延迟/退避/让位
+统一进 delayed ZSET、过期在 promote/claim 时判定。
+
+Postgres 上用 `SELECT … FOR UPDATE SKIP LOCKED` 做原子 claim：**多台 worker 并发领取互不阻塞、不会重复**；
+命名租约是 `INSERT … ON CONFLICT DO UPDATE … WHERE` 的单条 CAS；表名带 `?prefix=` 前缀，多环境共库不打架。
+本地跑测试：`make pg-up && make test-postgres`（起一个 55432 端口的专用容器，`make pg-down` 删掉）。
+
+**Lua 被禁也能用**：启动探测 `EVAL`，被禁用时自动回退 `WATCH/MULTI/EXEC` 乐观事务（语义相同，
+争抢时多几个往返）。`?lua=off` 强制回退、`?lua=on` 要求必须有 Lua。
+
+**Redis Cluster（`?cluster=1`）**：键按逻辑队列打 hash tag（`taskmq:{q}:ready`），单队列的
+promote/claim 仍是一次原子 Lua（显式 KEYS，同槽）；跨队列取件跨 slot、没有单次原子可言，降级为
+「每队列各取一次 + Python 侧按 band/权重选」，一致性套件据此声明跳过 `global_priority`。
+客户端自带 CRC16 slot 计算 + `CLUSTER SLOTS` 拓扑 + `MOVED`/`ASK` 跟随，跨槽命令在发出前就
+被拦下；只支持 db 0。本地跑测试：`make redis-cluster-up && make test-redis-cluster`。
+
+## 扩展：接自己的后端（插件）
+
+不改 taskmq 源码，三条路径（能力等价，细节见 [docs/design/plugins.md](docs/design/plugins.md)）：
+
+```python
+# ① 打包 + entry point：插件包声明 [project.entry-points."taskmq.plugins"]，用户只写一行
+app = App(Config(transport="rocketmq://rmq.aliyuncs.com:8080/taskmq?group=workers"))
+
+# ② 私有环境不打包：显式加载
+app = App(Config(transport="rocketmq://..."))
+app.load_plugins(["mycompany.mq_adapters.rocketmq"])      # 或 TASKMQ_PLUGINS=... / CLI --plugins ...
+```
+
+```bash
+TASKMQ_PLUGINS=mycompany.mq taskmq --app myapp:app worker -Q email --once
+taskmq --app myapp:app --plugins mycompany.mq status       # 顺带打印 transport 声明的 LIMITATIONS
+```
+
+```python
+# ③ 自己管生命周期：直接给实例
+app = App(Config(transport=RocketMQTransport(...)))
+```
+
+插件作者只依赖公开契约（`taskmq.transport` / `taskmq.protocol` / `taskmq.plugins`），
+并且**如实声明能力**：`supports_leases` / `supports_workers` 决定框架会不会调用对应方法，
+语义对不齐的写进 `limitations`（`status` 会打印）。用一致性套件自证语义：
+
+```python
+from taskmq.testing import transport_conformance
+
+def test_my_backend():                     # 15 个场景：优先级/FIFO、原子 claim、租约回收、
+    transport_conformance(                 # defer/让位/过期/幂等键/DLQ/状态往返/能力诚实性…
+        lambda: MyTransport(...),
+        supports={"leases": True, "workers": False},
+    )
+```
+
+完整可运行示例：[examples/plugin_rocketmq](examples/plugin_rocketmq)（假 MQ 实现 + entry point + README；
+跑套件 **12 个场景通过、4 个按声明跳过**——包括"不支持 job 枚举 ⇒ 该后端不能跑 DAG 工作流"）。
+
+## DAG 工作流
+
+依赖**声明在代码里**（可 review / 可测试 / 可画图），推进由节点完成事件驱动，**不轮询、无中心协调**：
+
+```python
+from taskmq.workflow import WorkflowBuilder
+
+@app.workflow("etl")
+def etl(wf: WorkflowBuilder, source: str):            # 提交时传参数（按关键字）
+    extract = wf.step("extract", extract_task, args=(source,))
+    clean   = wf.step("clean", clean_task, deps={"rows": extract})      # 上游结果按参数名注入
+    stats   = wf.step("stats", stats_task, deps={"rows": clean})
+    return wf.join("report", report_task, deps=[clean, stats], collect="tables")   # 汇合点按序收集
+
+handle = app.submit_workflow("etl", {"source": "s3://bucket/2026-03-08"})
+handle.status()        # 每节点 state/attempt/job_id + 总体状态
+handle.get(timeout=60) # 等汇节点结果（客户端本地等待）
+```
+
+```bash
+taskmq --app myapp:app workflow list              # 运行中的工作流
+taskmq --app myapp:app workflow status wf-01H...  # 每节点状态 + 依赖
+taskmq --app myapp:app workflow resume wf-01H...  # 补偿推进（幂等，崩溃恢复用）
+```
+
+语义要点：
+
+- 节点就是**普通任务**：自己的重试、DLQ、超时、优先级、队列（解析顺序 `step > 任务自带 > 运行级 > config 默认`）；
+- **幂等推进**：节点 job id 确定性（`{run}::{node}`）+ 幂等键 → at-least-once 下重复推进不会重复执行；
+- **崩溃恢复**：节点状态是事实来源，worker 维护期对未完成的运行做补偿推进（≥1s 节流），也可以手工 `resume`；
+- **失败语义**：默认 fail-fast（下游标 `SKIPPED`，其他分支照跑）；`on_failure="continue"` 表示该节点失败不阻断整条运行；
+- 需要 transport 支持 `supports_job_listing`（memory/sqlite/redis 都支持；插件不实现则在提交工作流时**直接报错**）。
+
+设计与决策（D1–D9）：[docs/design/workflows.md](docs/design/workflows.md)。
+
+## 定时调度（beat）
+
+```python
+from taskmq.schedule import cron, every
+
+app.schedule(
+    cron("send_report", "0 9 * * *", tz="Asia/Shanghai"),   # 每天 9 点（zoneinfo 本地时区）
+    every("cleanup", minutes=5, misfire="run_once"),        # 每 5 分钟，错过补一次
+)
+```
+
+```bash
+uv run taskmq --app myapp:app beat                 # 独立进程；多副本靠 __beat__ 租约选主
+uv run taskmq --app myapp:app beat --once          # 只推进一轮（测试/外部 cron 驱动）
+uv run taskmq --app myapp:app dev                  # 本地开发：worker + beat 同进程
+```
+
+misfire：`skip`（默认，错过就跳过）/ `run_once`（补一次）；状态落 `taskmq.beat.json`
+（`--state` 可改），只有 leader 写；**首次部署只记基准不补跑**。
+
+## 可观测性
+
+结构化事件默认输出 JSON 到 stdout（`Config(events="stdout")`）；接 OTel 只需换一行：
+
+```python
+app = App(Config(events="otel"))            # 需要 pip install 'taskmq[otel]'
+# 或自己注入 tracer（便于测试 / 自定义 exporter）：
+from taskmq.otel import OtelEventSink
+app.add_sink(OtelEventSink(tracer))
+```
+
+每个任务执行是一个 span（`messaging.system=taskmq`、`messaging.destination.name`、
+`messaging.message.id`、`taskmq.attempt/priority/worker`），失败/重试记 ERROR 状态；
+`task.deferred` 之类的事件挂成 span event。**OTel 不是 core 依赖**。
+
+`taskmq status` 会列出在线 worker：
+
+```
+WORKERS
+  worker-1.local-8123-9f2c        queues=email,default pool=threads concurrency=8 heartbeat=2s ago
+```
 
 ## CLI
 
@@ -174,3 +330,7 @@ def send_email_bound(self, to: str, subject: str) -> str:
 | 9 | 优先级 | **方案 D**：全局严格优先 + 让位 + 平级队列轮询（P1–P19 见 [priority.md](docs/design/priority.md)） |
 
 完整设计：[docs/design.md](docs/design.md) 与分册 [docs/design/](docs/design/)。
+
+## License
+
+[MIT](LICENSE) © 2026 liuhuo

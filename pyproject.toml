@@ -8,7 +8,7 @@ version = "0.0.1.dev0"
 description = "零外部服务、投递语义可预测、配置显式的 Python 分布式任务队列"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [{ name = "taskmq" }]
 keywords = ["task-queue", "celery", "sqlite", "worker", "distributed", "priority"]
 dependencies = ["msgspec>=0.18"]
@@ -17,11 +17,14 @@ classifiers = [
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
   "Typing :: Typed",
 ]
 
 [project.optional-dependencies]
 otel = ["opentelemetry-api>=1.20"]
+postgres = ["psycopg[binary]>=3.1"]
+amqp = ["pika>=1.3"]
 
 [project.scripts]
 taskmq = "taskmq.cli:main"
@@ -33,6 +36,10 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "pyright>=1.1.414",
+    "pytest-cov>=7.1.0",
+    "opentelemetry-api>=1.44.0",
+    "psycopg[binary]>=3.3.6",
+    "pika>=1.3",
 ]
 
 [tool.uv]
@@ -57,6 +64,11 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+# pika（RabbitMQ）没有 py.typed / stubs → 只对这一个第三方库关掉"必须带类型"
+[[tool.mypy.overrides]]
+module = ["pika", "pika.*"]
+ignore_missing_imports = true
 
 [tool.mypy]
 python_version = "3.10"

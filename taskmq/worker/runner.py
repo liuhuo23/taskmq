@@ -26,6 +26,7 @@ from ..protocol import ACK_ON_RECEIPT, ACK_ON_SUCCESS
 from ..ratelimit import RateLimit, TokenBucket
 from ..task import Task, TaskContext, _reset_current, _set_current
 from ..transport.base import Delivery, JobState
+from ..workflow import decode_node_header
 from .execution import BodyOutcome, ChildTask, decide_retry, execute_task
 from .pool import Pool, make_pool
 
@@ -81,6 +82,9 @@ class Worker:
         self._concurrency_leases: dict[int, str] = {}
         self._held_keys: set[str] = set()          # 本 worker 正在跑的 concurrency_key
         self._capabilities_checked = False
+        self._heartbeat_registered = False
+        self._last_heartbeat = 0.0
+        self._last_reconcile = 0.0
 
     # ------------------------------------------------------------------ 观测
     def __repr__(self) -> str:
@@ -110,12 +114,14 @@ class Worker:
         if self._stopped:
             return 0
         self._validate_capabilities()
+        self._touch_heartbeat()
         self._reap()
         self._yield_for_priority()
         self._reserve()
         return self._start_pending()
 
     def _reap(self) -> None:
+        self._reconcile_workflows()        # 自带节流；不能放在下面的周期门之后
         now = time.monotonic()
         interval = max(0.05, min(float(self.config.heartbeat_interval), self.lease / 3.0))
         if now - self._last_reap < interval:
@@ -127,6 +133,65 @@ class Worker:
         except Exception:  # pragma: no cover - transport 故障不应打死 worker
             logger.exception("reap 失败（transport 异常）")
         self._renew_inflight_leases()
+
+    def _reconcile_workflows(self) -> None:
+        """DAG 补偿推进：修复「节点跑完但推进没来得及」的窗口（幂等，可重复跑）。"""
+        if not self.app.workflows:
+            return
+        now = time.monotonic()
+        if now - self._last_reconcile < max(1.0, float(self.config.heartbeat_interval)):
+            return
+        self._last_reconcile = now
+        try:
+            run_ids = self.app.pending_workflows(limit=5)
+        except Exception:  # pragma: no cover - transport 故障不影响任务执行
+            logger.debug("枚举未完成工作流失败", exc_info=True)
+            return
+        for run_id in run_ids:
+            try:
+                self.app.advance_workflow(run_id)
+            except Exception:  # pragma: no cover - 单个运行推进失败不打死 worker
+                logger.debug("补偿推进失败：%s", run_id, exc_info=True)
+
+    def _advance_workflow(self, delivery: Delivery) -> None:
+        """节点执行结束后推进它的运行（幂等：节点 job id + 幂等键双重去重）。"""
+        ref = decode_node_header(delivery.envelope.headers)
+        if ref is None or not self.app.workflows:
+            return
+        try:
+            self.app.advance_workflow(ref.run)
+        except Exception:  # 推进失败不能影响任务本身的 ack/DLQ 语义
+            logger.exception("工作流推进失败（run=%s node=%s）", ref.run, ref.node)
+
+    def _touch_heartbeat(self) -> None:
+        """登记/刷新 worker 心跳（`taskmq status` 的 worker 列表靠它）。"""
+        if not getattr(self.transport, "supports_workers", False):
+            return
+        now = time.monotonic()
+        if self._heartbeat_registered and now - self._last_heartbeat < self.config.heartbeat_interval:
+            return
+        self._last_heartbeat = now
+        try:
+            if not self._heartbeat_registered:
+                self.transport.register_worker(
+                    self.worker_id,
+                    queues=self.queues,
+                    pool=self._pool.name,
+                    concurrency=self.concurrency,
+                    meta={"pid": os.getpid()},
+                )
+                self._heartbeat_registered = True
+                self.app.emit(
+                    "worker.started",
+                    worker=self.worker_id,
+                    queues=list(self.queues),
+                    pool=self._pool.name,
+                    concurrency=self.concurrency,
+                )
+            else:
+                self.transport.heartbeat_worker(self.worker_id)
+        except Exception:  # 心跳失败不该打死 worker
+            logger.debug("worker 心跳失败", exc_info=True)
 
     def _renew_inflight_leases(self) -> None:
         """在途任务续租（§10.4）。
@@ -382,6 +447,7 @@ class Worker:
             self._release_concurrency(delivery)
             _reset_current(token)
         self._apply_outcome(task, delivery, ctx, outcome, ack_mode)
+        self._advance_workflow(delivery)
 
     def _apply_outcome(
         self,
@@ -495,6 +561,7 @@ class Worker:
             deliveries=delivery.deliveries,
             ack_mode=ack_mode,
             hard_timeout=task.hard_timeout,
+            plugins=self.app.plugins,
         )
         outcome = self._pool.run_remote(payload)
         if outcome.error_type == "HardTimeout":
@@ -585,6 +652,13 @@ class Worker:
         try:
             self.drain()
         finally:
+            if self._heartbeat_registered:
+                try:
+                    self.transport.deregister_worker(self.worker_id)
+                    self.app.emit("worker.stopped", worker=self.worker_id)
+                except Exception:  # pragma: no cover - 注销失败不影响退出
+                    logger.debug("worker 注销失败", exc_info=True)
+                self._heartbeat_registered = False
             self._pool.shutdown(wait=True)
 
 

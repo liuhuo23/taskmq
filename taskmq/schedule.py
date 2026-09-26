@@ -13,8 +13,9 @@ from __future__ import annotations
 import dataclasses
 import math
 import re
+from collections.abc import Mapping
 from datetime import datetime, timedelta
-from typing import Any, Mapping
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .errors import ConfigError
@@ -44,6 +45,7 @@ _PART = re.compile(r"^(?P<base>\*|\d+(?:-\d+)?)(?:/(?P<step>\d+))?$")
 def _parse_field(text: str, field: str) -> tuple[frozenset[int], bool]:
     """返回 (取值集合, 是否 `*`)；越界/格式错抛 ConfigError。"""
     low, high = _RANGES[field]
+    allowed_high = 7 if field == "weekday" else high   # cron 允许 7 = 周日
     values: set[int] = set()
     starred = False
     for raw in text.split(","):
@@ -67,8 +69,8 @@ def _parse_field(text: str, field: str) -> tuple[frozenset[int], bool]:
             start = end = int(base)
             if step > 1:
                 end = high
-        if start < low or end > high or start > end:
-            raise ConfigError(f"cron {field} 字段越界（{low}-{high}）：{part!r}")
+        if start < low or end > allowed_high or start > end:
+            raise ConfigError(f"cron {field} 字段越界（{low}-{allowed_high}）：{part!r}")
         values.update(range(start, end + 1, step))
     if field == "weekday" and 7 in values:
         values.discard(7)

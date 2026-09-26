@@ -239,5 +239,10 @@ def test_events_include_defer_reason():
 
 
 def test_events_config_validation():
+    """值必须是非空字符串；名字合法性由 events.build_sink 在 App 构造时判定（插件可注册 sink）。"""
     with pytest.raises(ConfigError):
-        Config(events="kafka").validate()
+        Config(events="").validate()
+    with pytest.raises(ConfigError):
+        Config(events=123).validate()      # 类型不对 → 直接报错
+    with pytest.raises(ConfigError):            # 未知 sink → App 构造即失败（fail fast）
+        App(Config(transport="memory://", events="kafka"))

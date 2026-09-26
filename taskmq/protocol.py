@@ -17,7 +17,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 from .errors import (
     DecodeError,
@@ -236,8 +236,17 @@ class Envelope:
 
     # ------------------------------------------------------------- 便捷方法
     def next_attempt(self, **changes: Any) -> Envelope:
-        """返回 `attempt + 1` 的新 envelope（重试用）；可覆盖任意字段（如 priority）。"""
-        defaults: dict[str, Any] = {"attempt": self.attempt + 1, "enqueued_at": time.time()}
+        """返回 `attempt + 1` 的新 envelope（重试用）；可覆盖任意字段（如 priority）。
+
+        **幂等键按尝试次数分代**：重试是"把同一个 envelope 再入队一次"，如果沿用一个 key，
+        就会被幂等键当成重复投递而吞掉（DAG 节点用确定性幂等键去重时会踩到）。
+        所以第 n 次投递的 key 是 `key#n`；生产侧的首投键保持原样，跨次重试不会互相顶掉。
+        """
+        defaults: dict[str, Any] = {
+            "attempt": self.attempt + 1,
+            "enqueued_at": time.time(),
+            "key": f"{self.key}#{self.attempt + 1}" if self.key else None,
+        }
         defaults.update(changes)
         return dataclasses.replace(self, **defaults)
 
@@ -470,11 +479,19 @@ _CODEC_FACTORIES: dict[str, type[Codec]] = {"json": JSONCodec, "msgspec": Msgspe
 
 
 def get_codec(name: str, registry: CodecRegistry | None = None) -> Codec:
-    """按名字取编解码器；名字未知或依赖缺失时抛 `UnsupportedCodec`。"""
-    try:
-        factory = _CODEC_FACTORIES[name]
-    except KeyError:
+    """按名字取编解码器：内建 → 插件注册表；名字未知或依赖缺失时抛 `UnsupportedCodec`。"""
+    from .plugins import codec_factory, known_codecs, load_plugins
+
+    factory: Any = _CODEC_FACTORIES.get(name)
+    if factory is None:
+        factory = codec_factory(name)
+        if factory is None:
+            load_plugins(entry_points=True)          # 懒发现插件注册的序列化器
+            factory = codec_factory(name)
+    if factory is None:
+        known = sorted(set(_CODEC_FACTORIES) | set(known_codecs()))
         raise UnsupportedCodec(
-            f"未知的序列化器 {name!r}，可选：{', '.join(sorted(_CODEC_FACTORIES))}"
-        ) from None
-    return factory(registry)
+            f"未知的序列化器 {name!r}，可选：{', '.join(known)}"
+            "（自定义序列化器用 taskmq.plugins.register_codec）"
+        )
+    return cast("Codec", factory(registry))

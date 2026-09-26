@@ -13,3 +13,6 @@ __pycache__/
 *.db-shm
 dist/
 build/
+.coverage
+coverage.xml
+htmlcov/
