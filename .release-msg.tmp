@@ -1,9 +1,0 @@
-chore(release): 默认分支改 main、MIT LICENSE、CI + 测试通过自动发版
-
-- 默认分支 master -> main
-- 加 MIT LICENSE（pyproject license = { file = "LICENSE" } + OSI classifier），README 补 License 段
-- probe_amqp2.py 移进 examples/probe_amqp.py
-- version 0.0.1.dev0 -> 0.1.0（首个生产版本）
-- .github/workflows/ci.yml：ruff + mypy + pyright + pytest（redis / redis-cluster / postgres / rabbitmq 服务）
-- .github/workflows/release.yml：ci 在 main 上全绿后自动打 tag + 建 Release
-  （tag = 去 .devN 后缀的版本号，同名 tag 存在则跳过）
