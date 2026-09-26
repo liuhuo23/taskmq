@@ -1,0 +1,59 @@
+name: release
+
+# 测试（ci.yml）在 main 上全绿后，自动把当前版本打成生产版本：
+#   - tag = pyproject 的 version 去掉 .devN 后缀（0.1.0.dev0 -> v0.1.0）
+#   - 同名 tag 已存在就跳过（幂等，普通 push 不会重复发版）
+#   - 产物是 uv build 出的 wheel + sdist，release notes 自动生成
+# 发下一个版本：改 pyproject 的 version（可带 .devN），合进 main 即可。
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.10"
+      - name: 从 pyproject 取版本
+        id: version
+        run: |
+          raw=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+          tag="v${raw%.dev*}"
+          echo "raw=$raw" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "版本 $raw -> tag $tag"
+      - name: 判断是否已发布过
+        id: check
+        run: |
+          if git rev-parse -q --verify "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.tag }} 已存在，跳过"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 打包（wheel + sdist）
+        if: steps.check.outputs.skip == 'false'
+        run: uv build
+      - name: 打 tag 并建 Release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" dist/*.whl dist/*.tar.gz \
+            --target "${{ github.event.workflow_run.head_sha }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes

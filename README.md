@@ -1,5 +1,7 @@
 # taskmq
 
+[![ci](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml/badge.svg)](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml)
+
 零外部服务就能跑起来、投递语义可预测、配置显式、调试不用猜的 Python 分布式任务队列。
 
 - 不需要 Redis / RabbitMQ / 外部数据库：`memory://`、`sqlite://`、`redis://`（都可用；redis 自带零依赖 RESP 客户端）

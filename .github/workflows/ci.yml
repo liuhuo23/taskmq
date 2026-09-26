@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 与 Makefile 的测试容器/集群端口保持一致；没有服务时对应测试会自动 skip
+  TASKMQ_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+  TASKMQ_TEST_REDIS_CLUSTER_URL: redis://127.0.0.1:7380/0
+  TASKMQ_TEST_POSTGRES_URL: postgresql://taskmq:taskmq@127.0.0.1:55432/taskmq
+  TASKMQ_TEST_AMQP_BROKER: amqp://taskmq:taskmq@127.0.0.1:55672/%2F
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskmq
+          POSTGRES_PASSWORD: taskmq
+          POSTGRES_DB: taskmq
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U taskmq"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:3.12-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: taskmq
+          RABBITMQ_DEFAULT_PASS: taskmq
+        ports: ["55672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.10"
+      - uses: actions/setup-node@v4      # pyright 需要 node
+        with:
+          node-version: "20"
+      - name: 安装依赖（锁定 uv.lock）
+        run: uv sync --locked
+      - name: lint（ruff）
+        run: uv run ruff check taskmq tests
+      - name: 类型检查（mypy + pyright）
+        run: |
+          uv run mypy
+          uv run pyright
+      - name: 起 3 主 Redis Cluster（与 make redis-cluster-up 一致）
+        run: |
+          docker run -d --name taskmq-redis-cluster \
+            -p 127.0.0.1:7380:7380 -p 127.0.0.1:7381:7381 -p 127.0.0.1:7382:7382 \
+            redis:7.0.5 sh -c 'for p in 7380 7381 7382; do redis-server --port $p \
+              --cluster-enabled yes --cluster-config-file /data/nodes-$p.conf \
+              --cluster-node-timeout 5000 --cluster-announce-ip 127.0.0.1 \
+              --appendonly no --daemonize yes --dir /data; done; sleep 1; \
+              redis-cli --cluster create 127.0.0.1:7380 127.0.0.1:7381 127.0.0.1:7382 --cluster-yes; \
+              tail -f /dev/null'
+          for _ in $(seq 1 30); do
+            if docker exec taskmq-redis-cluster redis-cli -p 7380 cluster info | grep -q 'cluster_state:ok'; then
+              echo "redis cluster 就绪"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "redis cluster 没起来："
+          docker logs taskmq-redis-cluster
+          exit 1
+      - name: 测试（pytest：memory/sqlite/redis/cluster/postgres/amqp）
+        run: uv run pytest -q
