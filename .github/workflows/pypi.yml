@@ -59,6 +59,9 @@ jobs:
       url: https://pypi.org/p/taskmq
     steps:
       - uses: astral-sh/setup-uv@v10.2.0
+        with:                       # 这个 job 只上传产物、不检出仓库：关缓存、忽略空工作目录
+          enable-cache: false
+          ignore-empty-workdir: true
       - uses: actions/download-artifact@v8
         with:
           name: dist
