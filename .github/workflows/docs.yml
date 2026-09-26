@@ -1,0 +1,47 @@
+name: docs
+
+# 文档站（MkDocs Material）→ GitHub Pages。
+# 只在 docs/ 或配置变化时重跑；构建用 --strict：坏链接、缺文件直接让流水线红。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "README.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.10"
+      - name: 构建文档（严格模式）
+        # 文档工具不进项目依赖，也不动 uv.lock：CI 里临时装
+        run: uv run --with "mkdocs-material>=9,<10" mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

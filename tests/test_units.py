@@ -703,3 +703,18 @@ def test_cluster_client_validates_db_and_slot_shape():
         RedisClusterClient("redis://127.0.0.1:7380/15", timeout=1.0)
     with pytest.raises(ConfigError, match="scheme"):
         RedisClusterClient("redis+unix:///tmp/redis.sock", timeout=1.0)
+
+
+def test_package_version_matches_pyproject():
+    """版本只有一个来源：`pyproject.toml` 的 version（打包元数据）——CLI / 文档 / Release 都引用它。"""
+    import re
+    from pathlib import Path
+
+    import taskmq
+
+    if taskmq.__version__ == "0.0.0+unknown":
+        pytest.skip("taskmq 未安装（源码目录直接 import），无法与打包元数据比对")
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    match = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
+    assert match is not None, "pyproject.toml 里找不到 version"
+    assert taskmq.__version__ == match.group(1)

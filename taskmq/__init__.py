@@ -4,6 +4,9 @@
 """
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError as _PackageNotFound
+from importlib.metadata import version as _package_version
+
 from .app import App
 from .config import Config, QueueConfig
 from .errors import (
@@ -49,7 +52,10 @@ from .transport.redis import RedisTransport
 from .transport.sqlite import SqliteTransport
 from .worker.runner import Worker
 
-__version__ = "0.0.1.dev0"
+try:                       # 版本以打包元数据为准（pyproject 是唯一来源，避免两处漂移）
+    __version__ = _package_version("taskmq")
+except _PackageNotFound:   # pragma: no cover - 未安装、直接源码 import
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "App",

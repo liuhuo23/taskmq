@@ -1,6 +1,6 @@
 # 原生 DAG 工作流设计（v1.0）
 
-> Phase 2 第一刀：把 [design.md:45](design.md) 里那句「用**原生 DAG 工作流**替代 chain/group/chord，
+> Phase 2 第一刀：把 [design.md:45](../design.md) 里那句「用**原生 DAG 工作流**替代 chain/group/chord，
 > 调度器直接感知依赖，不走轮询」落地。
 >
 > **状态：v1.0 已落地**（D1–D9 全部取推荐项）；实现纪要、踩到的坑与语义澄清见 §8。

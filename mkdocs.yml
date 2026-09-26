@@ -1,0 +1,71 @@
+site_name: taskmq
+site_description: 零外部服务、投递语义可预测、配置显式的 Python 分布式任务队列
+site_url: https://liuhuo23.github.io/taskmq/
+repo_url: https://github.com/liuhuo23/taskmq
+repo_name: liuhuo23/taskmq
+edit_uri: edit/main/docs/
+docs_dir: docs
+copyright: MIT © 2026 liuhuo
+
+theme:
+  name: material
+  language: zh
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: 切到深色
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: 切到浅色
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # 中文标题也要有锚点（默认 slugify 会把 CJK 剥掉变成空锚）
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - 首页: index.md
+  - 使用指南:
+      - 安装与快速开始: guide/install.md
+      - 核心概念: guide/concepts.md
+      - 定义任务: guide/tasks.md
+      - 选择 transport: guide/transports.md
+      - 运行 worker: guide/workers.md
+      - 定时调度（beat）: guide/scheduling.md
+      - DAG 工作流: guide/workflows.md
+      - CLI 与运维: guide/cli.md
+      - 接入新后端（插件）: guide/plugins.md
+      - 常见问题: guide/faq.md
+  - 设计文档:
+      - 总设计: design.md
+      - 优先级: design/priority.md
+      - 任务模型: design/tasks.md
+      - 工作流: design/workflows.md
+      - 插件与一致性套件: design/plugins.md
+      - Redis 公平调度与 Cluster: design/redis-cluster.md

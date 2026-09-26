@@ -1,6 +1,11 @@
 # taskmq
 
 [![ci](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml/badge.svg)](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml)
+[![docs](https://github.com/liuhuo23/taskmq/actions/workflows/docs.yml/badge.svg)](https://liuhuo23.github.io/taskmq/)
+
+📖 **使用文档：<https://liuhuo23.github.io/taskmq/>**（[安装与快速开始](https://liuhuo23.github.io/taskmq/guide/install/) ·
+[核心概念](https://liuhuo23.github.io/taskmq/guide/concepts/) ·
+[选择 transport](https://liuhuo23.github.io/taskmq/guide/transports/)）
 
 零外部服务就能跑起来、投递语义可预测、配置显式、调试不用猜的 Python 分布式任务队列。
 

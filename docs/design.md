@@ -959,7 +959,7 @@ def test_worker_crash_redelivery():
 **已落地（v1.0，D1–D7 全部按建议确认）**：`taskmq/plugins.py` 注册表 + entry point 懒发现、
 `App.load_plugins`/`App.plugins`、`--plugins`/`TASKMQ_PLUGINS`、codec/sink（+ pool 预留）扩展点、
 `ChildTask.plugins` 子进程透传、15 个场景的 `taskmq.testing.transport_conformance()`、
-`Transport.limitations` + `status` 展示，以及示例插件 [examples/plugin_rocketmq](../examples/plugin_rocketmq)。
+`Transport.limitations` + `status` 展示，以及示例插件 [examples/plugin_rocketmq](https://github.com/liuhuo23/taskmq/tree/main/examples/plugin_rocketmq)。
 设计稿与实现纪要：[design/plugins.md](design/plugins.md)。
 
 ---
