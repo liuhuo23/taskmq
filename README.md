@@ -16,11 +16,11 @@
 - **优先级插队**：全局严格优先 + **未开始预留让位**（`yields` 独立计数）+ 平级队列轮询
 - 默认执行池 **threads**，CPU 密集显式切 `processes`
 - 默认序列化 **msgspec**，`serializer="json"` 可退回纯标准库
-- 最低 Python **3.10**（在 3.10.21 上真机验证）
+- 最低 Python **3.9**（CI 在 3.9 与 3.10 上各跑一遍全量测试；开发按 3.10）
 
 ## 安装（使用方）
 
-**不需要任何特殊工具，更不需要 uv**：Python ≥ 3.10 + pip 就够。
+**不需要任何特殊工具，更不需要 uv**：Python ≥ 3.9 + pip 就够。
 
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
@@ -45,23 +45,28 @@ taskmq worker -Q email,default -c 8
 
 📖 完整使用文档：**<https://liuhuo23.github.io/taskmq/>**
 
-## 开发环境（uv 可选）
+## 开发环境
 
-**开发也不需要 uv**，pip 一条路走到底：
+开发用 [uv](https://docs.astral.sh/uv/)（推荐）：解释器、虚拟环境、锁文件它一起管。
+
+```bash
+uv sync                     # 按 uv.lock 装依赖（dev group 含 pytest / ruff / mypy / pyright / …）
+make test                   # = uv run pytest
+make test-py39              # 在最低支持版本 3.9 上跑一遍（独立环境 .venv39，不动 .venv）
+make check                  # = lint + typecheck(mypy + pyright) + test
+```
+
+**3.9 / 3.10 的分工**：`.python-version` 固定 **3.10**（日常开发与类型检查的语言级别），
+3.9 作为**运行时下限**由 CI 用真 3.9 跑全量测试来守。想在代码里用 3.10 特性（`match`、`slots=True`、
+运行时 `X | Y`…）没问题，但要么放进 `if sys.version_info >= (3, 10)` 分支，要么走
+[`taskmq/_compat.py`](taskmq/_compat.py)（3.10+ 用原生、3.9 自动退化）——3.9 上跑一次测试就会告诉你有没有漏。
+
+不想装 uv 也行（使用方/CI 的 pip 路径，Makefile 会自动回落）：
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"     # 运行依赖 + 开发工具（pytest / ruff / mypy / pyright / …）
-make test                   # 用 .venv 的解释器跑（等价 python -m pytest）
-make check                  # = lint + typecheck(mypy + pyright) + test
-make coverage               # 覆盖率（当前 93%，门限目标 ≥ 90%）
-```
-
-想用 [uv](https://docs.astral.sh/uv/)（解析快、锁文件严格）也可以，它是**可选**的：
-
-```bash
-uv sync                     # 按 uv.lock 安装（含 dev group）
-uv run pytest               # uv 的跑法；或者 make test（Makefile 不依赖 uv）
+pip install -e ".[dev]"
+make test                   # 没有 uv 时用 .venv/bin/python -m pytest
 ```
 
 说明：`Makefile` 默认用 `.venv/bin/python`，没有就用 `$PYTHON`（默认 `python3`），所以
@@ -366,7 +371,7 @@ def send_email_bound(self, to: str, subject: str) -> str:
 | # | 决策 | 结论 |
 |---|---|---|
 | 1 | 包名 | `taskmq` |
-| 2 | 最低 Python | 3.10+ |
+| 2 | 最低 Python | 3.9+（开发/类型检查按 3.10） |
 | 3 | 默认池 | `threads` |
 | 4 | 投递语义 | at-least-once（成功才 ack） |
 | 5 | 序列化 | msgspec（`json` 可切） |

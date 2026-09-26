@@ -1,24 +1,36 @@
 # taskmq 开发入口。
 #
-# **不依赖 uv**：优先用 .venv 里的解释器，没有就用 $(PYTHON)（默认 python3）。
-# uv 只是我们开发时的便利工具（解析快、锁文件严格），不是使用/开发前提：
-#   make venv     # 不用 uv：python -m venv + pip install -e ".[dev]"
-#   make sync     # 想用 uv 就用它（可选）
+# 开发用 **uv**（推荐）：它同时管解释器、虚拟环境、锁文件
+#   make sync        # uv sync（按 uv.lock 装依赖）
+#   make test        # uv run pytest
+#   make test-py39   # uv run --python 3.9 pytest（最低支持版本，独立环境 .venv39，不动 .venv）
 #
-# 说明：托管 Python 的目录是 uv 的全局设置，只能用环境变量指定，
-# 走 uv 的路径时统一导出 UV_PYTHON_INSTALL_DIR，保证 3.10 解释器随工程走。
+# 没装 uv 也能用（使用方/CI 的 pip 路径）：自动回落到 .venv 或 ${PYTHON}
+#   make venv        # python -m venv + pip install -e ".[dev]"
+#   make test PY=/path/to/python3.9
 
 PYTHON ?= python3
-UV ?= uv
+VENV_PY := $(wildcard .venv/bin/python)
+PY ?= $(if $(VENV_PY),$(VENV_PY),$(PYTHON))
+UV ?= $(shell command -v uv 2>/dev/null)
+
+# 托管 Python 的目录是 uv 的全局设置，只能用环境变量指定：导出让 3.9/3.10 解释器都随工程走
+# （HOME 不可写的受限沙箱里也能直接用；普通开发机不受影响）
 export UV_PYTHON_INSTALL_DIR := $(CURDIR)/.uv-python
 
-# .venv 存在就用它（pip 或 uv 建的都行），否则用系统解释器
-VENV_PY := $(wildcard .venv/bin/python)
-RUN ?= $(if $(VENV_PY),$(VENV_PY),$(PYTHON))
+ifeq ($(UV),)
+  PYTEST  := $(PY) -m pytest
+  RUFF    := $(PY) -m ruff
+  MYPY    := $(PY) -m mypy
+  PYRIGHT := $(PY) -m pyright
+else
+  PYTEST  := $(UV) run pytest
+  RUFF    := $(UV) run ruff
+  MYPY    := $(UV) run mypy
+  PYRIGHT := $(UV) run pyright
+endif
 
-PY ?= 3.10
-
-.PHONY: venv sync test test-py310 lint fmt fmt-check typecheck typecheck-mypy typecheck-pyright coverage \
+.PHONY: venv sync test test-py39 lint fmt typecheck typecheck-mypy typecheck-pyright coverage \
 	pg-up pg-down test-postgres mq-up mq-down test-amqp redis-cluster-up redis-cluster-down \
 	test-redis-cluster check clean
 
@@ -27,32 +39,41 @@ venv:            ## 不用 uv 的开发环境：venv + pip install -e ".[dev]"
 	.venv/bin/python -m pip install -U pip
 	.venv/bin/python -m pip install -e ".[dev]"
 
-sync:            ## 用 uv 安装依赖（含 dev group；可选）
+ifeq ($(UV),)
+sync:
+	@echo "没找到 uv；用 make venv（pip 路径）或先装 uv：https://docs.astral.sh/uv/"
+	@exit 1
+test-py39:
+	@echo "切解释器要 uv；没有 uv 就用：make test PY=/path/to/python3.9"
+	@exit 1
+else
+sync:            ## 用 uv 安装依赖（含 dev group）
 	$(UV) sync
 
-test:            ## 跑测试（当前解释器：.venv 或 $PYTHON）
-	$(RUN) -m pytest
+test-py39:       ## 在最低支持版本 3.9 上跑测试（uv 管解释器；独立环境 .venv39）
+	UV_PROJECT_ENVIRONMENT=.venv39 $(UV) run --python 3.9 pytest
+endif
 
-test-py310:      ## 在最低支持版本 3.10 上跑测试（走 uv；没有 uv 就用 PYTHON=python3.10 make test）
-	$(UV) run --python $(PY) pytest
+test:            ## 跑测试
+	$(PYTEST)
 
 lint:
-	$(RUN) -m ruff check taskmq tests
+	$(RUFF) check taskmq tests
 
 fmt:
-	$(RUN) -m ruff format taskmq tests
-	$(RUN) -m ruff check --fix taskmq tests
+	$(RUFF) format taskmq tests
+	$(RUFF) check --fix taskmq tests
 
-typecheck: typecheck-mypy typecheck-pyright  ## 两个类型检查器都跑
+typecheck: typecheck-mypy typecheck-pyright  ## 两个类型检查器都跑（都按最低版本 3.9 检查）
 
 typecheck-mypy:
-	$(RUN) -m mypy
+	$(MYPY)
 
 typecheck-pyright:
-	$(RUN) -m pyright
+	$(PYRIGHT)
 
 coverage:
-	$(RUN) -m pytest -q --cov=taskmq --cov-report=term-missing
+	$(PYTEST) -q --cov=taskmq --cov-report=term-missing
 
 # PostgreSQL transport 的测试环境：一个可随时删掉的专用容器（55432 端口，避开本机 5432）
 PG_URL ?= postgresql://taskmq:taskmq@127.0.0.1:55432/taskmq
@@ -66,7 +87,7 @@ pg-down:         ## 删掉测试容器
 	docker rm -f taskmq-postgres-test
 
 test-postgres:   ## 只跑 Postgres transport 测试（默认连上面的容器）
-	TASKMQ_TEST_POSTGRES_URL=$(PG_URL) $(RUN) -m pytest tests/test_postgres_transport.py
+	TASKMQ_TEST_POSTGRES_URL=$(PG_URL) $(PYTEST) tests/test_postgres_transport.py
 
 # AMQP transport 同理：专用 RabbitMQ 容器（55672 AMQP / 15673 管理台）
 AMQP_BROKER ?= amqp://taskmq:taskmq@127.0.0.1:55672/%2F
@@ -80,7 +101,7 @@ mq-down:         ## 删掉测试容器
 	docker rm -f taskmq-rabbitmq-test
 
 test-amqp:       ## 只跑 AMQP transport 测试（默认连上面的容器）
-	TASKMQ_TEST_AMQP_BROKER='$(AMQP_BROKER)' $(RUN) -m pytest tests/test_amqp_transport.py
+	TASKMQ_TEST_AMQP_BROKER='$(AMQP_BROKER)' $(PYTEST) tests/test_amqp_transport.py
 
 # Redis Cluster 测试环境：3 主（7380-7382）。`--cluster-announce-ip 127.0.0.1` 让 MOVED
 # 返回宿主机可达的地址；容器内三个节点共用 127.0.0.1 的不同端口，gossip 也走得通。
@@ -100,9 +121,9 @@ redis-cluster-down:  ## 删掉测试容器
 	docker rm -f taskmq-redis-cluster
 
 test-redis-cluster:  ## 只跑 Redis Cluster 测试（默认连上面的容器）
-	TASKMQ_TEST_REDIS_CLUSTER_URL=$(REDIS_CLUSTER_URL) $(RUN) -m pytest tests/test_redis_cluster.py
+	TASKMQ_TEST_REDIS_CLUSTER_URL=$(REDIS_CLUSTER_URL) $(PYTEST) tests/test_redis_cluster.py
 
 check: lint typecheck test  ## 本地 CI 等价检查
 
 clean:
-	rm -rf .venv .uv-cache .uv-python .pytest_cache .ruff_cache .mypy_cache
+	rm -rf .venv .venv39 .uv-cache .uv-python .pytest_cache .ruff_cache .mypy_cache

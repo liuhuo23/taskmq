@@ -10,6 +10,7 @@ import re
 import time
 from collections.abc import Callable
 
+from ._compat import _SLOTS
 from .errors import ConfigError
 
 _UNITS = {
@@ -20,7 +21,7 @@ _UNITS = {
 _PATTERN = re.compile(r"^\s*(\d+)\s*/\s*([A-Za-z]+)\s*$")
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class RateLimit:
     """`"100/m"` 这类速率声明。"""
 

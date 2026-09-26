@@ -914,8 +914,8 @@ def test_worker_crash_redelivery():
 
 | # | 决策点 | 结论 |
 |---|---|---|
-| 1 | 包名 | ✅ **`taskmq`** —— `pymq`、`taskq`、`workq`、`pyq`、`taskkit`、`jobkit` 等在 PyPI 已被占用，`taskmq` 可用；import 名与发行名统一 |
-| 2 | 最低 Python 版本 | ✅ **3.10+**（`match`、`dataclass(slots=True)`、`X \| Y`、`zip(strict=)`；不使用 3.11+ 的 `asyncio.timeout` / `TaskGroup` / `ExceptionGroup` / `tomllib`） |
+| 1 | 包名 | ✅ import 名 **`taskmq`**；PyPI 发行名 **`taskmq-py`**（`taskmq` 与已有的 `task-mq` 被 PyPI 判为相似名称，不允许新建），命令行仍是 `taskmq` |
+| 2 | 最低 Python 版本 | ✅ **3.9+** 运行时下限；**开发与类型检查按 3.10**（`.python-version`）。3.10 专属能力按需降级：`dataclass(slots=True)` 走 `taskmq/_compat.py` 的 `_SLOTS`，`ParamSpec`/`Concatenate` 在 3.9 从 `typing_extensions` 取；CI 在真 3.9 与 3.10 上各跑一遍全量测试。不使用 3.11+ 的 `asyncio.timeout` / `TaskGroup` / `ExceptionGroup` / `tomllib` |
 | 3 | 默认执行池 | ✅ **`threads`**；CPU 密集显式切 `processes`；`async def` 任务强制 `asyncio` 池 |
 | 4 | 默认投递语义 | ✅ **at-least-once**（成功才 ack）+ 可见性租约 + `max_deliveries` + DLQ；不承诺 exactly-once，重复用 `key` 幂等 |
 | 5 | 默认序列化 | ✅ **`msgspec`**（core 唯一第三方依赖）；`serializer="json"` 退回纯标准库 |

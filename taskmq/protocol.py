@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
+from ._compat import _SLOTS
 from .errors import (
     DecodeError,
     EncodeError,
@@ -109,7 +110,7 @@ def ulid_timestamp(ulid: str) -> float:
 
 
 # ----------------------------------------------------------------------- Envelope
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class Envelope:
     """transport 中流转的消息体。
 
@@ -258,7 +259,7 @@ class Envelope:
 
 
 # ------------------------------------------------------------------ 自定义类型
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class TypeCodec:
     """自定义类型的编解码对。`encode` 必须返回 JSON 可编码的值。"""
 

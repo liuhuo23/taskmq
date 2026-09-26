@@ -7,6 +7,7 @@ import importlib
 import json
 import logging
 import multiprocessing
+import sys
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,14 @@ from taskmq.protocol import (
 from taskmq.task import Retry, RetryRequest, Task, TaskContext, current_app, current_task, run_hook
 from taskmq.transport.base import UNSET, Delivery, JobRecord, JobState, Transport
 from taskmq.transport.memory import MemoryTransport
+
+if sys.version_info >= (3, 10):     # 3.10+ 用标准库
+    from typing import ParamSpec
+else:                               # pragma: no cover - 3.9
+    from typing_extensions import ParamSpec
+
+#: 测试里 Task 的参数位用 ParamSpec 透传，别用 ... —— Task[_P, str] 在 3.9 上会 TypeError
+_P = ParamSpec("_P")
 
 
 def _write_module(tmp_path: Path, monkeypatch, name: str = "unit_app") -> str:
@@ -244,7 +253,7 @@ def test_retry_policy_validation_and_branches():
 def test_run_hook_swallows_hook_errors():
     app = App(Config(transport="memory://", events="null"))
 
-    class Boom(Task[..., str]):
+    class Boom(Task[_P, str]):
         name = "unit.boom"
 
         def on_success(self, ctx: TaskContext, retval: object) -> None:
@@ -313,7 +322,7 @@ def test_safe_hook_reports_error_text():
 
     app = App(Config(transport="memory://", events="null"))
 
-    class Boom(Task[..., str]):
+    class Boom(Task[_P, str]):
         name = "unit.hook"
 
         def on_failure(self, ctx: TaskContext, exc: BaseException) -> None:
@@ -343,7 +352,7 @@ def test_decide_retry_branches(exc, ack_mode, attempt, deliveries, expected):
 
     app = App(Config(transport="memory://", events="null"))
 
-    class Job(Task[..., str]):
+    class Job(Task[_P, str]):
         name = "unit.retry"
         retry_policy = Retry(backoff="fixed", base=0.0, jitter=False)
 
@@ -360,7 +369,7 @@ def test_decide_retry_without_policy_and_exhausted():
 
     app = App(Config(transport="memory://", events="null"))
 
-    class Plain(Task[..., str]):
+    class Plain(Task[_P, str]):
         name = "unit.plain"
         retry_policy = None
 
@@ -369,7 +378,7 @@ def test_decide_retry_without_policy_and_exhausted():
 
     assert decide_retry(Plain(app=app), 1, 1, RuntimeError("x"), ack_mode="on_success") is None
 
-    class Limited(Task[..., str]):
+    class Limited(Task[_P, str]):
         name = "unit.limited"
         retry_policy = Retry(max_attempts=2, jitter=False)
 

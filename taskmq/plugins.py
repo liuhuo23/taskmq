@@ -26,6 +26,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
+from ._compat import _SLOTS
 from .errors import ConfigError
 
 __all__ = [
@@ -70,7 +71,7 @@ BUILTIN_SINKS = ("stdout", "null", "otel")
 BUILTIN_POOLS = ("solo", "threads", "processes", "asyncio")
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class TransportOptions:
     """框架交给 transport 工厂的全部上下文（插件自己解析 URL 里自己的参数）。
 
@@ -86,7 +87,7 @@ class TransportOptions:
     config: Any
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class PoolOptions:
     """池工厂的上下文（预留扩展点，未承诺稳定性）。"""
 

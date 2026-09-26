@@ -27,6 +27,7 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .._compat import _SLOTS
 from ..errors import TransportError
 from ..protocol import Envelope
 
@@ -72,7 +73,7 @@ class _Unset:
 UNSET = _Unset()
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class Delivery:
     """一次 reserve 的结果：消息 + 当前投递的上下文。"""
 
@@ -89,7 +90,7 @@ class Delivery:
     yields: int = 0
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class JobRecord:
     """轻量 job 状态（`h.state` / `h.info` 的数据来源）。"""
 
@@ -109,7 +110,7 @@ class JobRecord:
         return self.state in JobState.TERMINAL
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class QueueStat:
     """队列深度快照。"""
 
@@ -120,7 +121,7 @@ class QueueStat:
     priority: int = 0
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class DeadLetter:
     """DLQ 条目：可查询、可重放。"""
 
@@ -134,7 +135,7 @@ class DeadLetter:
     failed_at: float
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class WorkerInfo:
     """一个 worker 进程的心跳快照（`taskmq status` 用它显示 worker 列表）。"""
 

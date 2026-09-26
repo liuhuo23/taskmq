@@ -4,7 +4,7 @@
 [![pypi](https://img.shields.io/pypi/v/taskmq-py?label=pypi)](https://pypi.org/project/taskmq-py/)
 [![release](https://img.shields.io/github/v/release/liuhuo23/taskmq?label=release)](https://github.com/liuhuo23/taskmq/releases)
 [![license](https://img.shields.io/github/license/liuhuo23/taskmq)](https://github.com/liuhuo23/taskmq/blob/main/LICENSE)
-![python](https://img.shields.io/badge/python-3.10%2B-blue)
+![python](https://img.shields.io/badge/python-3.9%2B-blue)
 
 **零外部服务就能跑起来、投递语义可预测、配置显式、调试不用猜**的 Python 分布式任务队列。
 
@@ -63,7 +63,7 @@ taskmq worker -Q email -c 8      # 消费 email 队列，并发 8
 
 ## 安装
 
-**只需要 Python 3.10+ 和 pip**（不需要 uv）：
+**只需要 Python 3.9+ 和 pip**（不需要 uv）：
 
 ```bash
 pip install taskmq-py                        # 分发名是 taskmq-py，import 仍是 taskmq

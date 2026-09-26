@@ -11,6 +11,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ._compat import _SLOTS
 from .errors import ConfigError, UnsupportedCodec
 from .priority import PRIORITY_MAX, PRIORITY_MIN, validate_priority
 from .protocol import get_codec
@@ -20,7 +21,7 @@ SUPPORTED_LOG_FORMATS = ("json", "pretty")
 SUPPORTED_RETRY_PRIORITY = ("keep", "lower")
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class QueueConfig:
     """单个逻辑队列的配置。
 
@@ -34,7 +35,7 @@ class QueueConfig:
     ttl: float | None = None
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class Config:
     transport: Any = "memory://"
     result: str | None = None

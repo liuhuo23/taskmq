@@ -350,7 +350,12 @@ class AmqpTransport(Transport):
         envelope = self._codec.decode(bytes(body))
         message_id = int(headers.get(_H_ID, method.delivery_tag))
         expires = headers.get(_H_EXPIRES)
-        expires_at = float(expires) if expires not in (None, "") else envelope.expires_at
+        # 故意写成 if/else 而不是三元表达式：三元形式下 mypy 1.x 不做收窄，
+        # 会报 float(Any | None)（headers 是 dict[Any, Any]）
+        if expires is None or expires == "":  # noqa: SIM108
+            expires_at = envelope.expires_at
+        else:
+            expires_at = float(expires)
         if expires_at is not None and float(expires_at) <= now:
             self._retry(lambda ch: ch.basic_ack(method.delivery_tag))
             self._state.set_state(

@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
+from ._compat import _SLOTS
 from .app import App
 from .config import Config
 from .errors import LeaseLost, TransportError
@@ -171,7 +172,7 @@ def _capability(transport: Transport, supports: Mapping[str, bool] | None, name:
     return bool(getattr(transport, f"supports_{name}", False))
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class _Time:
     """套件内部的时间视图：真实时钟用 sleep，假时钟用 advance（都只推进"刚好过期"）。"""
 

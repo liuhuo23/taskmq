@@ -19,6 +19,10 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10"]   # 运行时下限 + 开发版本，都跑全量（含真服务）
     services:
       redis:
         image: redis:7-alpine
@@ -50,7 +54,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
       - uses: actions/setup-node@v7      # pyright 需要 node
         with:
           node-version: "22"
@@ -88,11 +92,15 @@ jobs:
   # 使用方路径：**不装 uv**，只用 python -m venv + pip（本地/生产就是这么用的）
   pip-install:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.12"]     # 最低支持版本 + 常用版本
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
       - name: venv + pip install -e ".[dev]"
         run: |
           python -m venv .venv

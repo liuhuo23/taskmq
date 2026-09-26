@@ -12,18 +12,16 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
-from typing import (
-    Any,
-    Concatenate,
-    Literal,
-    ParamSpec,
-    TypeVar,
-    cast,
-    overload,
-)
+from typing import Any, Literal, TypeVar, cast, overload
+
+if sys.version_info >= (3, 10):     # 3.10+ 用标准库
+    from typing import Concatenate, ParamSpec
+else:                               # pragma: no cover - 3.9（typing_extensions 是 <3.10 的条件依赖）
+    from typing_extensions import Concatenate, ParamSpec
 
 from .config import Config
 from .errors import ConfigError, TaskError, WorkflowError, error_text

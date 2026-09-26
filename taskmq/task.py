@@ -37,11 +37,18 @@ import dataclasses
 import functools
 import logging
 import random
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Generic, ParamSpec, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
+if sys.version_info >= (3, 10):     # 3.10+ 用标准库
+    from typing import ParamSpec
+else:                               # pragma: no cover - 3.9
+    from typing_extensions import ParamSpec
+
+from ._compat import _SLOTS
 from .errors import Reject, RemoteError, RetryRequest, TaskError, TaskTimeout
 from .protocol import ACK_ON_SUCCESS, Envelope
 from .ratelimit import RateLimit
@@ -54,7 +61,7 @@ R = TypeVar("R")
 
 
 # --------------------------------------------------------------------- Retry
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class Retry:
     """声明式重试策略（§11.2）。`retry_on` 是白名单；不在白名单的异常不重试。"""
 

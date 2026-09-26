@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ._compat import _SLOTS
 from .errors import ConfigError
 
 __all__ = ["Schedule", "CronExpr", "cron", "every", "parse_cron"]
@@ -78,7 +79,7 @@ def _parse_field(text: str, field: str) -> tuple[frozenset[int], bool]:
     return frozenset(values), starred
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class CronExpr:
     """5 字段 cron 表达式。"""
 
@@ -160,7 +161,7 @@ def parse_cron(expr: str) -> CronExpr:
     )
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class Schedule:
     """一条调度：`cron` 与 `every` 共用一个结构（便于序列化/落状态）。"""
 

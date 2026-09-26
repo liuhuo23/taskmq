@@ -2,13 +2,13 @@
 
 ## 环境要求
 
-- **Python 3.10+**（CI 在 3.10 上跑全量测试）
+- **Python 3.9+**（CI 在 3.9 与 3.10 上各跑一遍全量测试）
 - 运行时依赖只有 `msgspec`；PostgreSQL / AMQP / OTel 都是可选 extras
 - 各后端需要的外部服务见[选择 transport](transports.md)
 
 ## 安装
 
-**只需要 Python 3.10+ 和 pip**（不需要 uv 之类的开发工具）。
+**只需要 Python 3.9+ 和 pip**（不需要 uv 之类的开发工具）。
 
 !!! info "分发名是 `taskmq-py`"
     PyPI 上 `taskmq` 和已有的 `task-mq` 被判定为相似名称（去分隔符后同名），所以**安装名是
@@ -39,13 +39,16 @@
 
     ```bash
     git clone https://github.com/liuhuo23/taskmq && cd taskmq
-    python -m venv .venv && source .venv/bin/activate
-    pip install -e ".[dev]"      # 运行依赖 + pytest/ruff/mypy/pyright/…
-    make test                    # 全量测试（带服务时会连真 Redis/PG/RabbitMQ）
+    uv sync                      # 推荐：uv 管解释器 + 虚拟环境 + 锁文件
+    make test                    # = uv run pytest
+    make test-py39               # 最低支持版本 3.9 上再跑一遍（独立环境 .venv39）
     ```
 
-    想用 [uv](https://docs.astral.sh/uv/) 也行（可选）：`uv sync && uv run pytest`；
-    `Makefile` 默认用 `.venv` 的解释器，所以 `make test` / `make check` 不需要 uv。
+    不用 uv 也行：`python -m venv .venv && pip install -e ".[dev]" && make test`
+    （`Makefile` 有 uv 用 uv，没有就回落到 `.venv` / `$PYTHON`）。
+
+    语言级别：`.python-version` = **3.10**（开发 + 类型检查），运行时下限 **3.9** 由 CI 的真 3.9 测试守；
+    用 3.10 特性请放进 `if sys.version_info >= (3, 10)` 分支或走 `taskmq/_compat.py`。
 
 装完就有 `taskmq` 命令；如果没进 PATH（或想在源码目录里临时跑），用 `python -m taskmq`，行为完全一样。
 

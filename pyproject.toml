@@ -9,13 +9,18 @@ name = "taskmq-py"
 version = "0.1.0"
 description = "零外部服务、投递语义可预测、配置显式的 Python 分布式任务队列"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [{ name = "liuhuo" }]
 keywords = ["task-queue", "celery", "sqlite", "worker", "distributed", "priority"]
-dependencies = ["msgspec>=0.18"]
+dependencies = [
+  "msgspec>=0.18",
+  # 3.9 缺 typing.ParamSpec / Concatenate；3.10+ 用标准库，不装
+  'typing_extensions>=4.1.0; python_version < "3.10"',
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -30,13 +35,14 @@ amqp = ["pika>=1.3"]
 # 开发依赖的 pip 入口（CI 会用 pip 装这一组跑全量测试，缺项会红）
 # 与下面的 [dependency-groups].dev 保持一致：uv 走 group，pip 走 extra，两者内容必须相同。
 dev = [
+    # 约束刻意放松：要能在**最低支持版本 3.9** 上解析（3.10+ 会拿到更新版本）
     "pytest>=8",
+    "pytest-cov>=6",
     "mypy>=1.11",
     "ruff>=0.6",
-    "pyright>=1.1.414",
-    "pytest-cov>=7.1.0",
-    "opentelemetry-api>=1.44.0",
-    "psycopg[binary]>=3.3.6",
+    "pyright>=1.1.390",
+    "opentelemetry-api>=1.20",
+    "psycopg[binary]>=3.1",
     "pika>=1.3",
 ]
 
@@ -50,16 +56,17 @@ Issues = "https://github.com/liuhuo23/taskmq/issues"
 [project.scripts]
 taskmq = "taskmq.cli:main"
 
-# 开发依赖用 PEP 735 dependency-groups（uv 原生）。
+# 开发依赖用 PEP 735 dependency-groups（uv 原生）。内容与上面的 [project.optional-dependencies].dev 必须一致。
 [dependency-groups]
 dev = [
+    # 约束刻意放松：要能在**最低支持版本 3.9** 上解析（3.10+ 会拿到更新版本）
     "pytest>=8",
+    "pytest-cov>=6",
     "mypy>=1.11",
     "ruff>=0.6",
-    "pyright>=1.1.414",
-    "pytest-cov>=7.1.0",
-    "opentelemetry-api>=1.44.0",
-    "psycopg[binary]>=3.3.6",
+    "pyright>=1.1.390",
+    "opentelemetry-api>=1.20",
+    "psycopg[binary]>=3.1",
     "pika>=1.3",
 ]
 
@@ -81,7 +88,7 @@ addopts = "-q"
 
 [tool.ruff]
 line-length = 110
-target-version = "py310"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
@@ -92,6 +99,8 @@ module = ["pika", "pika.*"]
 ignore_missing_imports = true
 
 [tool.mypy]
+# 按**开发版本 3.10** 检查（mypy 2.x 也已不支持 3.9 目标）。
+# 3.9 是运行时下限：由 CI 用真 3.9 跑全量测试来守，而不是把语言级别降到 3.9。
 python_version = "3.10"
 files = ["taskmq"]
 warn_unused_ignores = true
@@ -103,6 +112,7 @@ disallow_untyped_defs = false
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+# 同 mypy：按开发版本 3.10 检查；3.9 的兼容性由 CI 的真 3.9 测试保证
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
 include = ["taskmq"]

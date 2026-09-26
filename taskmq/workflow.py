@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from ._compat import _SLOTS
 from .errors import ConfigError, WorkflowError
 from .transport.base import JobState, Transport
 
@@ -48,7 +49,7 @@ RUN_META_WORKFLOW = "workflow"
 _FAILURE_MODES = ("fail", "continue")
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class Step:
     """DAG 里的一个节点：一个普通任务 + 依赖声明。
 
@@ -172,7 +173,7 @@ class WorkflowBuilder:
         return tuple(self._steps)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class Workflow:
     """注册在 App 上的 DAG 模板。"""
 
@@ -198,7 +199,7 @@ class Workflow:
         )
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class PlanEvaluation:
     """一次推进评估的结果（纯数据，便于日志/事件/测试）。
 
@@ -216,7 +217,7 @@ class PlanEvaluation:
         return self.state in JobState.TERMINAL
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class WorkflowPlan:
     """一次运行的具体图：拓扑、求值、参数注入。"""
 
@@ -350,7 +351,7 @@ class WorkflowPlan:
 
 
 # ------------------------------------------------------------------ 运行上下文
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class NodeRef:
     """消息头里的工作流上下文（worker 靠它知道该推进哪个运行）。"""
 
@@ -385,7 +386,7 @@ def run_meta(plan: WorkflowPlan) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ 查询句柄
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class NodeStatus:
     name: str
     state: str
@@ -395,7 +396,7 @@ class NodeStatus:
     error: str | None = None
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class WorkflowStatus:
     run_id: str
     workflow: str

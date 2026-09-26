@@ -13,6 +13,7 @@ import traceback
 from collections.abc import Callable
 from typing import Any
 
+from .._compat import _SLOTS
 from ..errors import Reject, RetryRequest, error_text
 from ..protocol import ACK_ON_COMPLETION, ACK_ON_SUCCESS, Envelope
 from ..task import Task, TaskContext
@@ -32,7 +33,7 @@ logger = logging.getLogger("taskmq.child")
 _CHILD_APP: Any = None
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class BodyOutcome:
     """一次执行的结果（可 pickle，能跨进程回传）。"""
 
@@ -58,7 +59,7 @@ class BodyOutcome:
         )
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, **_SLOTS)
 class ChildTask:
     """发给子进程的执行请求（必须可 pickle）。"""
 
