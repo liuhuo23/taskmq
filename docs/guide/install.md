@@ -8,21 +8,31 @@
 
 ## 安装
 
-**只需要 Python 3.10+ 和 pip**（不需要 uv 之类的开发工具）。还没发布到 PyPI，三种装法：
+**只需要 Python 3.10+ 和 pip**（不需要 uv 之类的开发工具）。
 
-=== "直接从 git（推荐）"
+!!! info "分发名是 `taskmq-py`"
+    PyPI 上 `taskmq` 和已有的 `task-mq` 被判定为相似名称（去分隔符后同名），所以**安装名是
+    `taskmq-py`**；装完之后 `import taskmq` 和 `taskmq` 命令都和文档里写的一样。
+
+=== "PyPI（推荐）"
 
     ```bash
     python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
-    pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"
+    pip install taskmq-py
     # 需要哪个后端就带哪个 extra：
-    pip install "taskmq-py[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
+    pip install "taskmq-py[postgres,amqp,otel]"
+    ```
+
+=== "源码 / git"
+
+    ```bash
+    pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"
     ```
 
 === "Releases 里的 wheel"
 
     ```bash
-    pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq-0.1.0-py3-none-any.whl
+    pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq_py-0.1.0-py3-none-any.whl
     ```
 
 === "源码 + 开发依赖（贡献代码）"

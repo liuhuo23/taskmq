@@ -1,6 +1,7 @@
 # taskmq
 
 [![ci](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml/badge.svg)](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml)
+[![pypi](https://img.shields.io/pypi/v/taskmq-py?label=pypi)](https://pypi.org/project/taskmq-py/)
 [![release](https://img.shields.io/github/v/release/liuhuo23/taskmq?label=release)](https://github.com/liuhuo23/taskmq/releases)
 [![license](https://img.shields.io/github/license/liuhuo23/taskmq)](https://github.com/liuhuo23/taskmq/blob/main/LICENSE)
 ![python](https://img.shields.io/badge/python-3.10%2B-blue)
@@ -62,11 +63,15 @@ taskmq worker -Q email -c 8      # 消费 email 队列，并发 8
 
 ## 安装
 
-**只需要 Python 3.10+ 和 pip**（不需要 uv）。三种装法见[安装与快速开始](guide/install.md)：
-`pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"`、从
-[Releases](https://github.com/liuhuo23/taskmq/releases) 下载 wheel，或 clone 源码 `pip install -e ".[dev]"`。
+**只需要 Python 3.10+ 和 pip**（不需要 uv）：
 
-装完就有 `taskmq` 命令；没进 PATH 时用 `python -m taskmq`（等价）。
+```bash
+pip install taskmq-py                        # 分发名是 taskmq-py，import 仍是 taskmq
+pip install "taskmq-py[postgres,amqp,otel]"  # 需要哪个后端就带哪个 extra
+```
+
+也可以从 [git / Releases / 源码](guide/install.md) 装。装完就有 `taskmq` 命令；
+没进 PATH 时用 `python -m taskmq`（等价）。
 
 ## License
 

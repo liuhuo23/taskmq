@@ -63,10 +63,26 @@ Phase，见 [README 决策表](https://github.com/liuhuo23/taskmq#决策)。
 只有用到对应后端时才需要：`pip install "taskmq-py[postgres]"` / `"taskmq-py[amqp]"` / `"taskmq-py[otel]"`。
 没装就构造那个 transport 会立刻报错（fail fast），不影响其他后端。
 
+## 为什么 `pip install` 的名字是 `taskmq-py`？
+
+因为 PyPI 上已有 `task-mq`，PyPI 的新项目相似度检查会把 `taskmq` 和它（去掉分隔符后同名）判为冲突，
+直接拒绝新建。所以**分发名**用 `taskmq-py`，而 `import taskmq` 与 `taskmq` 命令保持不变：
+
+```bash
+pip install taskmq-py
+python -c "import taskmq; print(taskmq.__version__)"
+taskmq --version
+```
+
 ## 有生产版本了吗？
 
-有：见 [Releases](https://github.com/liuhuo23/taskmq/releases)。发版流程是「`main` 上 CI 全绿 → 自动打 tag +
-建 Release」（tag = `pyproject.toml` 的版本去掉 `.devN`），还没发布到 PyPI。
+有：PyPI 上是 [`taskmq-py`](https://pypi.org/project/taskmq-py/)（`pip install taskmq-py`），
+GitHub 上是 [Releases](https://github.com/liuhuo23/taskmq/releases)。发版链路是全自动的：
+
+1. `main` 上 CI 全绿 → 自动打 tag + 建 GitHub Release（tag = `pyproject.toml` 版本去掉 `.devN`）；
+2. 该 Release 触发 [pypi.yml](https://github.com/liuhuo23/taskmq/blob/main/.github/workflows/pypi.yml)，
+   用 **Trusted Publishing（OIDC）** 发到 PyPI——仓库里不存任何 token；
+3. 同名版本已存在则跳过（幂等），要发新版只需改 `version` 合进 `main`。
 
 ## 下一步
 

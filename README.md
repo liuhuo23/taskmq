@@ -1,6 +1,8 @@
 # taskmq
 
 [![ci](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml/badge.svg)](https://github.com/liuhuo23/taskmq/actions/workflows/ci.yml)
+[![pypi](https://img.shields.io/pypi/v/taskmq-py?label=pypi)](https://pypi.org/project/taskmq-py/)
+[![python](https://img.shields.io/pypi/pyversions/taskmq-py)](https://pypi.org/project/taskmq-py/)
 [![docs](https://github.com/liuhuo23/taskmq/actions/workflows/docs.yml/badge.svg)](https://liuhuo23.github.io/taskmq/)
 
 📖 **使用文档：<https://liuhuo23.github.io/taskmq/>**（[安装与快速开始](https://liuhuo23.github.io/taskmq/guide/install/) ·
@@ -22,11 +24,13 @@
 
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"     # 还没发布到 PyPI
-# 或者用 Releases 里的 wheel：
-#   pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq-0.1.0-py3-none-any.whl
-# 需要哪个后端就带哪个 extra：
-pip install "taskmq-py[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
+
+pip install taskmq-py                                  # PyPI（分发名 taskmq-py，import 仍是 taskmq）
+pip install "taskmq-py[postgres,amqp,otel]"            # 需要哪个后端就带哪个 extra
+
+# 也可以从源码 / Release 装：
+#   pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"
+#   pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq_py-0.1.0-py3-none-any.whl
 
 taskmq --version              # console script（装包后就有）
 python -m taskmq --version    # 没进 PATH / 源码目录临时跑，等价
