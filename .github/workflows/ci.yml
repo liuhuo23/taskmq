@@ -84,3 +84,41 @@ jobs:
           exit 1
       - name: 测试（pytest：memory/sqlite/redis/cluster/postgres/amqp）
         run: uv run pytest -q
+
+  # 使用方路径：**不装 uv**，只用 python -m venv + pip（本地/生产就是这么用的）
+  pip-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: venv + pip install -e ".[dev]"
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -U pip
+          .venv/bin/python -m pip install -e ".[dev]"
+      - name: 两个 CLI 入口都可用（console script / python -m）
+        run: |
+          .venv/bin/taskmq --version
+          .venv/bin/python -m taskmq --version
+      - name: pip 路径端到端冒烟（sqlite transport）
+        run: |
+          .venv/bin/python - <<'PY'
+          from taskmq import App, Config
+          from taskmq.testing import run_until_idle
+
+          app = App(Config(transport="sqlite:///./smoke.db", events="null", concurrency=2))
+
+          `app.task(queue="smoke")
+          def add(a: int, b: int) -> int:
+              return a + b
+
+          handle = add.delay(1, 2)
+          run_until_idle(app, queues=["smoke"])
+          assert handle.get(timeout=5) == 3, handle.state
+          print("pip 路径 smoke OK:", handle.state)
+          PY
+      - name: 测试（无外部服务；redis/pg/amqp 用例自动 skip）
+        run: .venv/bin/python -m pytest -q
+

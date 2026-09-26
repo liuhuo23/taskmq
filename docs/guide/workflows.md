@@ -58,9 +58,9 @@ app.resume_workflow(handle.id)                 # 补偿推进（幂等，可重�
 ```
 
 ```bash
-uv run taskmq --app myapp.tasks:app workflow list              # 未完成的运行
-uv run taskmq --app myapp.tasks:app workflow status wf-01H...  # 逐节点状态 + 依赖
-uv run taskmq --app myapp.tasks:app workflow resume wf-01H...  # 补偿推进
+taskmq --app myapp.tasks:app workflow list              # 未完成的运行
+taskmq --app myapp.tasks:app workflow status wf-01H...  # 逐节点状态 + 依赖
+taskmq --app myapp.tasks:app workflow resume wf-01H...  # 补偿推进
 ```
 
 ## 完整示例

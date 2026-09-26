@@ -27,7 +27,7 @@ run_until_idle(app, queues=["email"])   # 同进程就地跑 worker：断点调�
 
 ```bash
 export TASKMQ_APP=myapp.tasks:app       # 你的 App 实例（module:attr）
-uv run taskmq worker -Q email -c 8      # 消费 email 队列，并发 8
+taskmq worker -Q email -c 8      # 消费 email 队列，并发 8
 ```
 
 ## 特性一览
@@ -62,9 +62,11 @@ uv run taskmq worker -Q email -c 8      # 消费 email 队列，并发 8
 
 ## 安装
 
-还没发布到 PyPI。三种装法见[安装与快速开始](guide/install.md)：源码 `uv sync`（开发）、
-从 [Releases](https://github.com/liuhuo23/taskmq/releases) 下载 wheel、或
-`pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"`。
+**只需要 Python 3.10+ 和 pip**（不需要 uv）。三种装法见[安装与快速开始](guide/install.md)：
+`pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"`、从
+[Releases](https://github.com/liuhuo23/taskmq/releases) 下载 wheel，或 clone 源码 `pip install -e ".[dev]"`。
+
+装完就有 `taskmq` 命令；没进 PATH 时用 `python -m taskmq`（等价）。
 
 ## License
 

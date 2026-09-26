@@ -22,12 +22,12 @@ taskmq --app myapp.tasks:app [--plugins mycompany.mq] <命令> [选项]
 
 ```bash
 export TASKMQ_APP=myapp.tasks:app
-uv run taskmq worker -Q email,default -c 8
-uv run taskmq worker --once
-uv run taskmq status --by-priority
-uv run taskmq dlq list -Q email
-uv run taskmq dlq replay --all -Q email --priority 0
-uv run taskmq call myapp.tasks.send_email --args '["a@b.com","hi"]'
+taskmq worker -Q email,default -c 8
+taskmq worker --once
+taskmq status --by-priority
+taskmq dlq list -Q email
+taskmq dlq replay --all -Q email --priority 0
+taskmq call myapp.tasks.send_email --args '["a@b.com","hi"]'
 ```
 
 ## status 看什么

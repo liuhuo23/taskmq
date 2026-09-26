@@ -9,7 +9,7 @@
 ```bash
 # ① 打包安装后自动发现（本包已在 pyproject.toml 声明 entry point）
 #    注意：taskmq 还没发布到 PyPI，从本仓库装示例要用 --no-deps
-uv pip install --no-deps -e examples/plugin_rocketmq
+pip install --no-deps -e examples/plugin_rocketmq
 taskmq --app myapp:app status -Q rocket        # 不需要任何 --plugins
 ```
 

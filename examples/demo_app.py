@@ -3,13 +3,13 @@
 启动 worker：
 
 ~~~bash
-PYTHONPATH=. uv run taskmq --app examples.demo_app:app worker -Q demo -c 2
+python -m taskmq --app examples.demo_app:app worker -Q demo -c 2
 ~~~
 
 投递任务：
 
 ~~~bash
-PYTHONPATH=. uv run python -c "from examples.demo_app import app; app.submit('demo.add', (1, 2))"
+python -c "from examples.demo_app import app; app.submit('demo.add', (1, 2))"
 ~~~
 """
 from __future__ import annotations

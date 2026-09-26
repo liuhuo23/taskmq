@@ -1,4 +1,4 @@
-"""测试通用夹具：确保仓库根在 sys.path 上（也让 `uv run pytest` 之外的调用方式可用）。"""
+"""测试通用夹具：确保仓库根在 sys.path 上（也让 `python -m pytest` 之外的调用方式可用）。"""
 from __future__ import annotations
 
 import sys

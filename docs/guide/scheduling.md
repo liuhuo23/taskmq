@@ -23,9 +23,9 @@ app.schedule(
 ## 起 beat
 
 ```bash
-uv run taskmq --app myapp.tasks:app beat              # 常驻
-uv run taskmq --app myapp.tasks:app beat --once       # 只推进一轮（测试 / 外部 cron 驱动）
-uv run taskmq --app myapp.tasks:app dev               # 本地开发：worker + beat 同进程
+taskmq --app myapp.tasks:app beat              # 常驻
+taskmq --app myapp.tasks:app beat --once       # 只推进一轮（测试 / 外部 cron 驱动）
+taskmq --app myapp.tasks:app dev               # 本地开发：worker + beat 同进程
 ```
 
 ```python

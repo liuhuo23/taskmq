@@ -8,14 +8,15 @@
 
 ## 安装
 
-还**没有发布到 PyPI**，三种装法：
+**只需要 Python 3.10+ 和 pip**（不需要 uv 之类的开发工具）。还没发布到 PyPI，三种装法：
 
-=== "源码（开发）"
+=== "直接从 git（推荐）"
 
     ```bash
-    git clone https://github.com/liuhuo23/taskmq && cd taskmq
-    uv sync                 # .venv（Python 3.10）+ dev 依赖
-    uv run pytest           # 全量测试（带服务时会连真 Redis/PG/RabbitMQ）
+    python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+    pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"
+    # 需要哪个后端就带哪个 extra：
+    pip install "taskmq[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
     ```
 
 === "Releases 里的 wheel"
@@ -24,18 +25,24 @@
     pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq-0.1.0-py3-none-any.whl
     ```
 
-=== "直接从 git"
+=== "源码 + 开发依赖（贡献代码）"
 
     ```bash
-    pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"
-    # 需要哪个后端就带哪个 extra：
-    pip install "taskmq[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
+    git clone https://github.com/liuhuo23/taskmq && cd taskmq
+    python -m venv .venv && source .venv/bin/activate
+    pip install -e ".[dev]"      # 运行依赖 + pytest/ruff/mypy/pyright/…
+    make test                    # 全量测试（带服务时会连真 Redis/PG/RabbitMQ）
     ```
+
+    想用 [uv](https://docs.astral.sh/uv/) 也行（可选）：`uv sync && uv run pytest`；
+    `Makefile` 默认用 `.venv` 的解释器，所以 `make test` / `make check` 不需要 uv。
+
+装完就有 `taskmq` 命令；如果没进 PATH（或想在源码目录里临时跑），用 `python -m taskmq`，行为完全一样。
 
 ## 冒烟测试
 
 ```bash
-uv run taskmq --version          # 版本号来自打包元数据
+taskmq --version                 # 版本号来自打包元数据（没进 PATH 就 python -m taskmq --version）
 ```
 
 ```python
@@ -84,8 +91,8 @@ def send_email(to: str, subject: str) -> str:
 
 ```bash
 export TASKMQ_APP=myapp.tasks:app
-uv run taskmq worker -Q email -c 8        # -Q 队列（逗号分隔），-c 并发
-uv run taskmq worker -Q email --once      # 跑空即退出：CI / 调试用
+taskmq worker -Q email -c 8              # -Q 队列（逗号分隔），-c 并发
+taskmq worker -Q email --once            # 跑空即退出：CI / 调试用
 ```
 
 !!! warning "worker 必须显式声明订阅的队列"
@@ -102,8 +109,8 @@ send_email.apply_async(("vip@b.com", "now"), priority=Priority.CRITICAL)   # 带
 ```
 
 ```bash
-uv run taskmq --app myapp.tasks:app call myapp.tasks.send_email --args '["a@b.com","hi"]'
-uv run taskmq --app myapp.tasks:app status           # 队列深度 / 优先级分布 / worker
+taskmq --app myapp.tasks:app call myapp.tasks.send_email --args '["a@b.com","hi"]'
+taskmq --app myapp.tasks:app status           # 队列深度 / 优先级分布 / worker
 ```
 
 ### 4) 换后端只改一行

@@ -1,6 +1,6 @@
 """手工探测 AMQP transport 的脚本（先 `make mq-up` 起测试用的 RabbitMQ）。
 
-    uv run python examples/probe_amqp.py
+    python examples/probe_amqp.py
 """
 import tempfile, time, uuid
 from taskmq import Envelope

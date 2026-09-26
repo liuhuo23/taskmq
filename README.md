@@ -16,25 +16,57 @@
 - 默认序列化 **msgspec**，`serializer="json"` 可退回纯标准库
 - 最低 Python **3.10**（在 3.10.21 上真机验证）
 
-## 开发环境（uv）
+## 安装（使用方）
 
-工具链统一走 [uv](https://docs.astral.sh/uv/)（>= 0.12）。`.python-version` 固定 **3.10**（最低支持版本）。
+**不需要任何特殊工具，更不需要 uv**：Python ≥ 3.10 + pip 就够。
 
 ```bash
-uv sync                 # 安装依赖（含 dev group：pytest / ruff / mypy）
-uv run pytest           # 跑测试
-uv run ruff check taskmq tests
-uv run mypy             # 类型检查（CI 口径）
-uv run pyright          # 类型检查（Pylance / 编辑器口径）
-make check              # = lint + typecheck(mypy + pyright) + test
-make coverage           # 覆盖率（当前 93%，门限目标 ≥ 90%）
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"     # 还没发布到 PyPI
+# 或者用 Releases 里的 wheel：
+#   pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq-0.1.0-py3-none-any.whl
+# 需要哪个后端就带哪个 extra：
+pip install "taskmq[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
+
+taskmq --version              # console script（装包后就有）
+python -m taskmq --version    # 没进 PATH / 源码目录临时跑，等价
 ```
 
-说明：本仓库的 `uv.toml` 把 uv 的 cache 放在工程内（`.uv-cache/`），`Makefile` 通过
-`UV_PYTHON_INSTALL_DIR` 把托管 Python 也放在工程内（`.uv-python/`），因此在 HOME 不可写的
-受限沙箱里也能直接用；普通开发机不受影响。新增依赖用 `uv add <pkg>`，不要手改 virtualenv。
+起 worker：
 
-## 当前状态（Phase 1 收尾：覆盖率 93%，202 个测试）
+```bash
+export TASKMQ_APP=myapp.tasks:app
+taskmq worker -Q email,default -c 8
+```
+
+📖 完整使用文档：**<https://liuhuo23.github.io/taskmq/>**
+
+## 开发环境（uv 可选）
+
+**开发也不需要 uv**，pip 一条路走到底：
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"     # 运行依赖 + 开发工具（pytest / ruff / mypy / pyright / …）
+make test                   # 用 .venv 的解释器跑（等价 python -m pytest）
+make check                  # = lint + typecheck(mypy + pyright) + test
+make coverage               # 覆盖率（当前 93%，门限目标 ≥ 90%）
+```
+
+想用 [uv](https://docs.astral.sh/uv/)（解析快、锁文件严格）也可以，它是**可选**的：
+
+```bash
+uv sync                     # 按 uv.lock 安装（含 dev group）
+uv run pytest               # uv 的跑法；或者 make test（Makefile 不依赖 uv）
+```
+
+说明：`Makefile` 默认用 `.venv/bin/python`，没有就用 `$PYTHON`（默认 `python3`），所以
+`make test` / `make lint` / `make typecheck` 都不需要 uv。`uv.toml` 把 uv 的 cache 放在工程内
+（`.uv-cache/`），走 uv 时 `UV_PYTHON_INSTALL_DIR` 把托管 Python 也放工程内（`.uv-python/`）——
+只为在 HOME 不可写的受限沙箱里也能用，普通开发机不受影响。依赖声明有两处、必须一致：
+`[dependency-groups].dev`（uv）与 `[project.optional-dependencies].dev`（pip），CI 两条路径都会跑。
+
+## 当前状态（Phase 1–2 完成：306 个测试全绿，含真 Redis / Redis Cluster / PostgreSQL / RabbitMQ）
 
 已实现：
 
@@ -53,6 +85,9 @@ make coverage           # 覆盖率（当前 93%，门限目标 ≥ 90%）
 | \`taskmq/transport/redis.py\` \`redis_client.py\` | **Redis transport**：零依赖 RESP2 客户端 + Lua 原子操作；禁用 Lua 时自动回退 \`WATCH/MULTI/EXEC\`；\`?cluster=1\` 走 slot 路由（hash tag 分槽 + MOVED/ASK） |
 | \`taskmq/transport/postgres.py\` | **PostgreSQL transport**：\`FOR UPDATE SKIP LOCKED\` 原子 claim（多机零重复、零阻塞）、表前缀隔离、一致性套件 16/16 |
 | \`taskmq/schedule.py\` \`worker/beat.py\` | **beat**：cron/interval（zoneinfo、DST 覆盖）、\`__beat__\` 租约选主、misfire、JSON 状态文件 |
+| `taskmq/transport/amqp.py` | **AMQP transport**：`x-max-priority` 排序 + TTL/DLX 延迟 + DLX 死信；状态走 `?state=` 侧车 |
+| `taskmq/workflow.py` | **原生 DAG 工作流**：依赖声明在代码里、事件驱动推进（不轮询）、幂等补偿推进 |
+| `taskmq/plugins.py` | 插件注册表：transport / codec / sink / pool 扩展点 + `taskmq.plugins` entry point 懒发现 |
 | \`taskmq/worker/runner.py\` | worker 心跳注册表（memory/sqlite/redis 三家），\`status\` 可看 worker 列表与心跳年龄 |
 | \`taskmq/testing.py\` | \`worker_for\` / \`run_until_idle\` / \`eager_app\` |
 
@@ -182,9 +217,9 @@ app.schedule(
 ```
 
 ```bash
-uv run taskmq --app myapp:app beat                 # 独立进程；多副本靠 __beat__ 租约选主
-uv run taskmq --app myapp:app beat --once          # 只推进一轮（测试/外部 cron 驱动）
-uv run taskmq --app myapp:app dev                  # 本地开发：worker + beat 同进程
+taskmq --app myapp:app beat                        # 独立进程；多副本靠 __beat__ 租约选主
+taskmq --app myapp:app beat --once                 # 只推进一轮（测试/外部 cron 驱动）
+taskmq --app myapp:app dev                         # 本地开发：worker + beat 同进程
 ```
 
 misfire：`skip`（默认，错过就跳过）/ `run_once`（补一次）；状态落 `taskmq.beat.json`
@@ -216,12 +251,12 @@ WORKERS
 
 ```bash
 export TASKMQ_APP=myapp.tasks:app        # 或 --app myapp.tasks:app
-uv run taskmq worker -Q email,default -c 8
-uv run taskmq worker --once             # 跑空即退出（CI/调试）
-uv run taskmq status --by-priority
-uv run taskmq dlq list -Q email
-uv run taskmq dlq replay --all -Q email --priority 0
-uv run taskmq call myapp.tasks.send_email --args '["a@b.com","hi"]'
+taskmq worker -Q email,default -c 8
+taskmq worker --once                    # 跑空即退出（CI/调试）
+taskmq status --by-priority
+taskmq dlq list -Q email
+taskmq dlq replay --all -Q email --priority 0
+taskmq call myapp.tasks.send_email --args '["a@b.com","hi"]'
 ```
 
 ## 快速开始

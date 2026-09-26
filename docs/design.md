@@ -804,7 +804,8 @@ def test_worker_crash_redelivery():
 - **时间冻结**：`freeze_time` 支持，测 ETA/退避/过期不用 sleep。
 - **故障注入**：崩溃、transport 报错、ack 失败，都要有一等公民的测试辅助。
 - 目标：**框架自身测试覆盖率 ≥ 90%，且所有并发/崩溃场景用确定性测试而非「睡 2 秒碰运气」**。
-- 工具链用 **uv**：`uv sync` → `uv run pytest`；`make check` = ruff + mypy + pytest；`.python-version` 固定 3.10（最低支持版本，真机验证）。
+- 工具链：`make check` = ruff + mypy + pyright + pytest，**不绑 uv**（默认用 `.venv` 的解释器）；
+  pip 路径 `pip install -e ".[dev]"`，uv 路径（可选）`uv sync` → `uv run pytest`；`.python-version` 固定 3.10（最低支持版本，真机验证）。
 
 ---
 

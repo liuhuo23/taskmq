@@ -8,8 +8,8 @@ worker 的职责只有三件：**reserve（领消息）→ 执行 → ack/nack**
 
     ```bash
     export TASKMQ_APP=myapp.tasks:app
-    uv run taskmq worker -Q email,default -c 8        # 多队列、并发 8
-    uv run taskmq worker -Q email --once              # 跑到队列空就退出（CI / 批处理）
+    taskmq worker -Q email,default -c 8        # 多队列、并发 8
+    taskmq worker -Q email --once              # 跑到队列空就退出（CI / 批处理）
     ```
 
 === "嵌进自己的程序"
@@ -69,7 +69,7 @@ Config(lease=60, heartbeat_interval=10, shutdown_timeout=30)
 - 退出时优雅收尾：先停止领新任务，等在跑的收尾，最长等 `shutdown_timeout`；超时则记 `task.lost_lease` 之类事件后退出。
 
 ```bash
-uv run taskmq status            # 队列深度 / 优先级分布 / WORKERS / LIMITATIONS
+taskmq status            # 队列深度 / 优先级分布 / WORKERS / LIMITATIONS
 ```
 
 ## 限流、串行、让位在 worker 侧怎么发生
