@@ -110,7 +110,7 @@ jobs:
 
           app = App(Config(transport="sqlite:///./smoke.db", events="null", concurrency=2))
 
-          `app.task(queue="smoke")
+          @app.task(queue="smoke")
           def add(a: int, b: int) -> int:
               return a + b
 
