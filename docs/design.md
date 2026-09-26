@@ -477,8 +477,8 @@ COMMIT;
 | `sqlite://` | Phase 0 | 零依赖默认、单机生产 |
 | `redis://` | Phase 1 ✅ | 高吞吐；零依赖 RESP 客户端 + Lua 原子操作（见下） |
 | `postgres://` | Phase 2 | 已经有 PG 的团队：SKIP LOCKED + LISTEN/NOTIFY |
-| `postgresql://` | Phase 2 ✅ | 多机 + 强一致：`FOR UPDATE SKIP LOCKED` 原子 claim、`ON CONFLICT` CAS 租约、幂等键唯一约束；需要 `taskmq[postgres]`（psycopg） |
-| `amqp://`（RabbitMQ） | Phase 2 ✅ | 投递走 broker（`x-max-priority` + per-message TTL/DLX 延迟 + DLX 死信），**状态走侧车** `?state=sqlite:///…`（AMQP 无 KV/DAG 索引）；跨队列不做全局严格优先（已声明降级）；需要 `taskmq[amqp]` |
+| `postgresql://` | Phase 2 ✅ | 多机 + 强一致：`FOR UPDATE SKIP LOCKED` 原子 claim、`ON CONFLICT` CAS 租约、幂等键唯一约束；需要 `taskmq-py[postgres]`（psycopg） |
+| `amqp://`（RabbitMQ） | Phase 2 ✅ | 投递走 broker（`x-max-priority` + per-message TTL/DLX 延迟 + DLX 死信），**状态走侧车** `?state=sqlite:///…`（AMQP 无 KV/DAG 索引）；跨队列不做全局严格优先（已声明降级）；需要 `taskmq-py[amqp]` |
 | `<自研>://` | **插件** | 第三方后端经注册表接入，核心零改动（[design/plugins.md](design/plugins.md)） |
 
 **Redis transport 实现要点**（`taskmq/transport/redis.py` + `taskmq/redis_client.py`）：
@@ -711,7 +711,7 @@ app.schedule(
 | `transport.error` | op, error, retry_in |
 
 - 所有事件都带 `job_id` 和 `trace`，可与 OpenTelemetry 的 traceparent 串起来。
-- ✅ **已实现**（`taskmq/otel.py`，可选依赖 `taskmq[otel]`，core 不依赖）：
+- ✅ **已实现**（`taskmq/otel.py`，可选依赖 `taskmq-py[otel]`，core 不依赖）：
   `task.started` → `start_span("task <name>")`，属性用标准 messaging 语义约定
   （`messaging.system=taskmq` / `destination.name` / `message.id` / `message.type`）+ `taskmq.attempt/priority/worker`；
   `task.succeeded|failed|retrying` → 结束 span 并设状态（retrying 记 ERROR + `taskmq.will_retry`）；

@@ -53,7 +53,7 @@ from .base import (
 
 __all__ = ["AmqpTransport", "parse_amqp_url"]
 
-_DRIVER_HINT = "AMQP transport 需要 pika：pip install 'taskmq[amqp]'"
+_DRIVER_HINT = "AMQP transport 需要 pika：pip install 'taskmq-py[amqp]'"
 
 #: 我们自己的优先级域 -9..9 → AMQP 0..18
 _PRIORITY_OFFSET = 9

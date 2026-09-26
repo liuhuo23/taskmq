@@ -6,7 +6,7 @@
   不重复投递**，不需要把整个队列串行化（sqlite 的 `BEGIN IMMEDIATE` 只能单机）；
 - 命名租约用 `INSERT … ON CONFLICT DO UPDATE … WHERE` 直接做 **CAS**，比"WATCH 重试"干净；
 - 事务 + 唯一约束让幂等键/job 状态天然跨机一致；
-- 代价：需要一个 Postgres 服务（`pip install taskmq[postgres]` + `postgresql://…`），
+- 代价：需要一个 Postgres 服务（`pip install taskmq-py[postgres]` + `postgresql://…`），
   小规模单机仍然建议 sqlite。
 
 语义与其它 transport **完全一致**（同一套 `transport_conformance` 场景，见 docs/design/plugins.md §6）。
@@ -39,7 +39,7 @@ from .base import (
 
 __all__ = ["PostgresTransport"]
 
-_DRIVER_HINT = "PostgreSQL transport 需要 psycopg：pip install 'taskmq[postgres]'"
+_DRIVER_HINT = "PostgreSQL transport 需要 psycopg：pip install 'taskmq-py[postgres]'"
 
 
 def _import_driver() -> Any:

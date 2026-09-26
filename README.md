@@ -22,11 +22,11 @@
 
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"     # 还没发布到 PyPI
+pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"     # 还没发布到 PyPI
 # 或者用 Releases 里的 wheel：
 #   pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq-0.1.0-py3-none-any.whl
 # 需要哪个后端就带哪个 extra：
-pip install "taskmq[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
+pip install "taskmq-py[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
 
 taskmq --version              # console script（装包后就有）
 python -m taskmq --version    # 没进 PATH / 源码目录临时跑，等价
@@ -81,7 +81,7 @@ uv run pytest               # uv 的跑法；或者 make test（Makefile 不依�
 | `taskmq/worker/` | `solo` / `threads` / **`asyncio`** / **`processes`** 池、reserve–start 耦合、让位（G2）、不打断运行中（G3）；限流 / `concurrency_key` 串行；`hard_timeout` 可强杀 |
 | `taskmq/ratelimit.py` | `"100/m"` token bucket（worker 内），超限走 `defer`（不消耗投递次数） |
 | \`taskmq/events.py\` | 结构化事件：\`Config.events="stdout"|\"null\"|\"otel\"\`、\`EventSink\` 协议、\`CollectingSink\`（测试） |
-| \`taskmq/otel.py\` | **OTel 适配器**（可选依赖 \`taskmq[otel]\`）：任务 span + 标准 messaging 语义约定 |
+| \`taskmq/otel.py\` | **OTel 适配器**（可选依赖 \`taskmq-py[otel]\`）：任务 span + 标准 messaging 语义约定 |
 | \`taskmq/transport/redis.py\` \`redis_client.py\` | **Redis transport**：零依赖 RESP2 客户端 + Lua 原子操作；禁用 Lua 时自动回退 \`WATCH/MULTI/EXEC\`；\`?cluster=1\` 走 slot 路由（hash tag 分槽 + MOVED/ASK） |
 | \`taskmq/transport/postgres.py\` | **PostgreSQL transport**：\`FOR UPDATE SKIP LOCKED\` 原子 claim（多机零重复、零阻塞）、表前缀隔离、一致性套件 16/16 |
 | \`taskmq/schedule.py\` \`worker/beat.py\` | **beat**：cron/interval（zoneinfo、DST 覆盖）、\`__beat__\` 租约选主、misfire、JSON 状态文件 |
@@ -106,8 +106,8 @@ Phase 2 已完成：**原生 DAG 工作流**、**PostgreSQL transport**、**`amq
 | `memory://` | 单测 / eager | 进程内，零依赖 |
 | `sqlite:///./taskmq.db` | 单机生产 / 共享盘 | WAL + `BEGIN IMMEDIATE` 原子 claim；同机多进程一等公民 |
 | `redis://127.0.0.1:6379/1?prefix=app1` | 高吞吐 / 多机 | 零依赖 RESP 客户端 + Lua 原子操作；`prefix` 隔离键空间；`?cluster=1` 支持 Redis Cluster |
-| `postgresql://user:pass@host:5432/db?prefix=app1_` | 多机 / 强一致 | `FOR UPDATE SKIP LOCKED` 原子 claim + `ON CONFLICT` CAS 租约；需要 `taskmq[postgres]` |
-| `amqp://user:pass@host:5672/vhost?state=sqlite:///./taskmq.db` | 已有 RabbitMQ / 需要路由 | `x-max-priority` 排序 + TTL/DLX 延迟 + DLX 死信；**状态（job/租约/worker/DAG 索引）必须给 `state=` 侧车**；需要 `taskmq[amqp]` |
+| `postgresql://user:pass@host:5432/db?prefix=app1_` | 多机 / 强一致 | `FOR UPDATE SKIP LOCKED` 原子 claim + `ON CONFLICT` CAS 租约；需要 `taskmq-py[postgres]` |
+| `amqp://user:pass@host:5672/vhost?state=sqlite:///./taskmq.db` | 已有 RabbitMQ / 需要路由 | `x-max-priority` 排序 + TTL/DLX 延迟 + DLX 死信；**状态（job/租约/worker/DAG 索引）必须给 `state=` 侧车**；需要 `taskmq-py[amqp]` |
 
 ```python
 app = App(Config(transport="redis://127.0.0.1:6379/1?prefix=myapp:"))
@@ -230,7 +230,7 @@ misfire：`skip`（默认，错过就跳过）/ `run_once`（补一次）；状�
 结构化事件默认输出 JSON 到 stdout（`Config(events="stdout")`）；接 OTel 只需换一行：
 
 ```python
-app = App(Config(events="otel"))            # 需要 pip install 'taskmq[otel]'
+app = App(Config(events="otel"))            # 需要 pip install 'taskmq-py[otel]'
 # 或自己注入 tracer（便于测试 / 自定义 exporter）：
 from taskmq.otel import OtelEventSink
 app.add_sink(OtelEventSink(tracer))

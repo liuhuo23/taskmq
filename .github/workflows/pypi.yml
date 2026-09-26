@@ -7,7 +7,7 @@ name: pypi
 #
 # 一次性准备（只能你在 PyPI 网页上做，API 不支持）：
 #   https://pypi.org/manage/account/publishing/ → "Add a pending publisher"
-#     PyPI Project Name : taskmq
+#     PyPI Project Name : taskmq-py   （PyPI 上 taskmq 与已有 task-mq 相似度冲突，不允許新建）
 #     Owner             : liuhuo23
 #     Repository name   : taskmq
 #     Workflow name     : pypi.yml
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/taskmq
+      url: https://pypi.org/p/taskmq-py
     steps:
       - uses: astral-sh/setup-uv@v10.2.0
         with:                       # 这个 job 只上传产物、不检出仓库：关缓存、忽略空工作目录

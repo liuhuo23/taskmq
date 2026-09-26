@@ -55,14 +55,14 @@ Redis 侧语义：score = `-priority * 2**40 + seq`，取件 = 「最高优先�
 
 ### `postgresql://user:pass@host:5432/db?prefix=app1_`
 
-需要 `pip install "taskmq[postgres]"`。`prefix` 是表名前缀（多环境共库）。
+需要 `pip install "taskmq-py[postgres]"`。`prefix` 是表名前缀（多环境共库）。
 
 原子 claim 用 `SELECT … FOR UPDATE SKIP LOCKED`：多台 worker 并发领取不阻塞、不重复；命名租约是
 `INSERT … ON CONFLICT DO UPDATE … WHERE` 的单条 CAS。
 
 ### `amqp://user:pass@host:5672/vhost?state=sqlite:///./state.db&prefix=taskmq.`
 
-需要 `pip install "taskmq[amqp]"`。**`state=` 是必填**：AMQP 是消息代理，没有 KV 存储，
+需要 `pip install "taskmq-py[amqp]"`。**`state=` 是必填**：AMQP 是消息代理，没有 KV 存储，
 job 状态 / 命名租约 / worker 表 / job 枚举都放在侧车（可以是 sqlite / postgres / redis）。
 
 AMQP 是 per-queue 有序，**跨队列不做全局严格优先** → 声明 `global_priority` 降级（用 `x-max-priority` 排同队列）。

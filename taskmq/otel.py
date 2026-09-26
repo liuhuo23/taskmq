@@ -1,4 +1,4 @@
-"""OpenTelemetry 适配器（可选依赖 `taskmq[otel]`）。
+"""OpenTelemetry 适配器（可选依赖 `taskmq-py[otel]`）。
 
 事件 → OTel span 的映射：
 
@@ -129,7 +129,7 @@ def otel_sink(*, tracer: Any = None, tracer_name: str = "taskmq") -> OtelEventSi
             from opentelemetry import trace
         except ImportError as exc:  # pragma: no cover - 取决于环境
             raise ConfigError(
-                "events='otel' 需要 opentelemetry-api：pip install 'taskmq[otel]'"
+                "events='otel' 需要 opentelemetry-api：pip install 'taskmq-py[otel]'"
             ) from exc
         tracer = trace.get_tracer(tracer_name)
     return OtelEventSink(tracer)

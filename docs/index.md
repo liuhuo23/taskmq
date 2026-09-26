@@ -63,7 +63,7 @@ taskmq worker -Q email -c 8      # 消费 email 队列，并发 8
 ## 安装
 
 **只需要 Python 3.10+ 和 pip**（不需要 uv）。三种装法见[安装与快速开始](guide/install.md)：
-`pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"`、从
+`pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"`、从
 [Releases](https://github.com/liuhuo23/taskmq/releases) 下载 wheel，或 clone 源码 `pip install -e ".[dev]"`。
 
 装完就有 `taskmq` 命令；没进 PATH 时用 `python -m taskmq`（等价）。

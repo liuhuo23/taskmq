@@ -63,7 +63,7 @@ Config(events="null")       # 关掉（测试常用）
 ### OTel
 
 ```python
-Config(events="otel")                  # 需要 pip install "taskmq[otel]"
+Config(events="otel")                  # 需要 pip install "taskmq-py[otel]"
 # 或自己注入 tracer：
 from taskmq.otel import OtelEventSink
 app.add_sink(OtelEventSink(tracer))

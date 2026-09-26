@@ -14,9 +14,9 @@
 
     ```bash
     python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
-    pip install "taskmq @ git+https://github.com/liuhuo23/taskmq"
+    pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"
     # 需要哪个后端就带哪个 extra：
-    pip install "taskmq[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
+    pip install "taskmq-py[postgres,amqp,otel] @ git+https://github.com/liuhuo23/taskmq"
     ```
 
 === "Releases 里的 wheel"

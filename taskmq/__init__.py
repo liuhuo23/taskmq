@@ -53,7 +53,7 @@ from .transport.sqlite import SqliteTransport
 from .worker.runner import Worker
 
 try:                       # 版本以打包元数据为准（pyproject 是唯一来源，避免两处漂移）
-    __version__ = _package_version("taskmq")
+    __version__ = _package_version("taskmq-py")
 except _PackageNotFound:   # pragma: no cover - 未安装、直接源码 import
     __version__ = "0.0.0+unknown"
 

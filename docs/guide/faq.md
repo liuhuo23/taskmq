@@ -60,7 +60,7 @@ Phase，见 [README 决策表](https://github.com/liuhuo23/taskmq#决策)。
 
 ## 我没装 psycopg / pika 会怎样？
 
-只有用到对应后端时才需要：`pip install "taskmq[postgres]"` / `"taskmq[amqp]"` / `"taskmq[otel]"`。
+只有用到对应后端时才需要：`pip install "taskmq-py[postgres]"` / `"taskmq-py[amqp]"` / `"taskmq-py[otel]"`。
 没装就构造那个 transport 会立刻报错（fail fast），不影响其他后端。
 
 ## 有生产版本了吗？
