@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taskmq"
+version = "0.0.1.dev0"
+description = "零外部服务、投递语义可预测、配置显式的 Python 分布式任务队列"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "taskmq" }]
+keywords = ["task-queue", "celery", "sqlite", "worker", "distributed", "priority"]
+dependencies = ["msgspec>=0.18"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+otel = ["opentelemetry-api>=1.20"]
+
+[project.scripts]
+taskmq = "taskmq.cli:main"
+
+# 开发依赖用 PEP 735 dependency-groups（uv 原生）。
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "mypy>=1.11",
+    "ruff>=0.6",
+    "pyright>=1.1.414",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+# 只在这几个平台上解析/安装（CI 与本地一致）
+environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
+
+[tool.setuptools.packages.find]
+include = ["taskmq*"]
+
+[tool.setuptools.package-data]
+taskmq = ["py.typed"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["taskmq"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = false
+
+# 编辑器（Pylance）默认引擎，与 mypy 一起跑，避免两边结论不一致
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+include = ["taskmq"]

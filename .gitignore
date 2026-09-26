@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# uv 的缓存与托管 Python 放在工程内（受限沙箱下 HOME 不可写）
+.uv-cache/
+.uv-python/
+*.db
+*.db-wal
+*.db-shm
+dist/
+build/

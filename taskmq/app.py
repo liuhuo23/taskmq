@@ -1,0 +1,491 @@
+"""App：任务注册表、传输/编解码装配、`submit` 入口。
+
+设计约束（docs/design.md §7.1）：
+- 构造即校验；未知配置项直接抛 `ConfigError`。
+- 无全局单例：可以有多个 App；`current_app()` 只在任务执行上下文中有效。
+- 导入期零副作用：`include=[...]` 只做 import。
+
+任务定义支持两种等价写法（docs/design/tasks.md）：
+`@app.task(...)`（函数式，`bind=True` 时首参注入 `self`）与 `app.register(TaskSubclass)`（类式）。
+"""
+from __future__ import annotations
+
+import importlib
+import logging
+import time
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
+from typing import (
+    Any,
+    Concatenate,
+    Literal,
+    ParamSpec,
+    TypeVar,
+    cast,
+    overload,
+)
+
+from .config import Config
+from .errors import ConfigError, TaskError, error_text
+from .events import EventSink, build_sink
+from .priority import validate_priority
+from .protocol import ACK_ON_SUCCESS, ACK_STRATEGIES, Codec, CodecRegistry, Envelope, get_codec
+from .schedule import Schedule
+from .task import Task, TaskContext, TaskHandle, _reset_current, _set_current, run_hook
+from .transport.base import JobState, Transport
+from .transport.memory import MemoryTransport
+from .transport.sqlite import SqliteTransport
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+logger = logging.getLogger("taskmq.app")
+
+_HOOK_NAMES = ("before_start", "on_success", "on_retry", "on_failure", "after_return")
+
+
+class _TaskFactory:
+    """`@app.task(...)` 的装饰器对象。
+
+    `__call__` 是**泛型方法**，所以 `@app.task(queue="x")` 也能把函数的参数类型与返回类型
+    推断进 `Task[P, R]`（`delay()` 因此有类型）。
+    """
+
+    def __init__(self, app: App, options: dict[str, Any], *, bind: bool = False) -> None:
+        self._app = app
+        self._options = options
+        self._bind = bind
+
+    def __call__(self, func: Callable[P, R]) -> Task[P, R]:
+        return cast("Task[P, R]", self._app._register(func, bind=self._bind, **self._options))
+
+
+class _BoundTaskFactory(_TaskFactory):
+    """`bind=True` 版本：函数首参会被注入任务实例 `self`，因此从 `delay()` 的参数里排除。"""
+
+    def __call__(self, func: Callable[Concatenate[Task, P], R]) -> Task[P, R]:  # type: ignore[override]
+        return cast("Task[P, R]", self._app._register(func, bind=True, **self._options))
+
+
+def _make_hook(name: str, handler: Callable[..., Any]) -> Callable[..., Any]:
+    if not callable(handler):
+        raise ConfigError(f"{name} 钩子必须是可调用对象，收到 {handler!r}")
+
+    def hook(self: Task, *args: Any, **kwargs: Any) -> Any:
+        return handler(*args, **kwargs)
+
+    hook.__name__ = name
+    return hook
+
+
+class App:
+    """应用容器。一个进程里可以有多个（测试友好）。"""
+
+    def __init__(self, config: Config | None = None, *, include: Sequence[str] | None = None) -> None:
+        self.config = config if config is not None else Config.from_env()
+        if not isinstance(self.config, Config):
+            raise ConfigError(f"config 必须是 Config，收到 {type(self.config).__name__}")
+        self.config.validate()
+        self._codec_registry = CodecRegistry()
+        self._tasks: dict[str, Task[Any, Any]] = {}
+        self._transport: Transport | None = None
+        self._codec: Codec | None = None
+        self._closed = False
+        self._sinks: list[EventSink] = [build_sink(self.config.events)]
+        self._schedules: list[Schedule] = []
+
+        for module in include or ():
+            importlib.import_module(module)
+
+    # -------------------------------------------------------------- 注册表
+    @property
+    def tasks(self) -> Mapping[str, Task[Any, Any]]:
+        return dict(self._tasks)
+
+    def task_for(self, name: str) -> Task[Any, Any] | None:
+        return self._tasks.get(name)
+
+    # ---------------------------------------------------------------- 定义
+    @overload
+    def task(self, func: Callable[P, R], **options: Any) -> Task[P, R]: ...
+
+    @overload
+    def task(
+        self, func: None = None, *, bind: Literal[True], **options: Any
+    ) -> _BoundTaskFactory: ...
+
+    @overload
+    def task(self, func: None = None, *, bind: bool = False, **options: Any) -> _TaskFactory: ...
+
+    def task(self, func: Any = None, **options: Any) -> Any:
+        """`@app.task` / `@app.task(queue=..., bind=True, base=..., on_failure=...)`。"""
+        bind = bool(options.pop("bind", False))
+        if func is None:
+            factory = _BoundTaskFactory if bind else _TaskFactory
+            return factory(self, options, bind=bind)
+        return self._register(func, bind=bind, **options)
+
+    def register(self, target: type[Task] | Task, **options: Any) -> Task[Any, Any]:
+        """注册**类式**任务：`app.register(EmailTask)`（或已构造好的实例）。"""
+        if isinstance(target, Task):
+            task: Task[Any, Any] = target
+        elif isinstance(target, type) and issubclass(target, Task):
+            if target.run is Task.run:
+                raise ConfigError(f"{target.__name__} 必须实现 run()")
+            task = target(self, **options)
+        else:
+            raise ConfigError(f"register() 需要 Task 子类或 Task 实例，收到 {target!r}")
+        return self._add(task)
+
+    def _register(self, func: Callable[..., Any], *, bind: bool = False, **options: Any) -> Task[Any, Any]:
+        base = options.pop("base", None)
+        hooks = {name: options.pop(name) for name in _HOOK_NAMES if name in options}
+        if base is not None and not (isinstance(base, type) and issubclass(base, Task)):
+            raise ConfigError(f"base 必须是 Task 子类，收到 {base!r}")
+
+        task: Task[Any, Any]
+        if base is None and not hooks:
+            task = Task(self, func, bind=bind, **options)
+        else:
+            task_cls = self._build_task_class(base or Task, func, bind=bind, hooks=hooks)
+            task = task_cls(self, **options)
+        return self._add(task)
+
+    @staticmethod
+    def _build_task_class(
+        base: type[Task],
+        func: Callable[..., Any] | None,
+        *,
+        bind: bool,
+        hooks: Mapping[str, Callable[..., Any]],
+    ) -> type[Task]:
+        namespace: dict[str, Any] = {}
+        class_name = base.__name__
+        if func is not None:
+            if bind:
+                def run(self: Task, *args: Any, **kwargs: Any) -> Any:
+                    return func(self, *args, **kwargs)
+            else:
+                def run(self: Task, *args: Any, **kwargs: Any) -> Any:
+                    return func(*args, **kwargs)
+
+            namespace["run"] = run
+            class_name = getattr(func, "__name__", base.__name__)
+            namespace["__module__"] = getattr(func, "__module__", base.__module__)
+            namespace["__qualname__"] = getattr(func, "__qualname__", class_name)
+        for hook_name, handler in hooks.items():
+            namespace[hook_name] = _make_hook(hook_name, handler)
+        return type(class_name, (base,), namespace)
+
+    def _add(self, task: Task[Any, Any]) -> Task[Any, Any]:
+        if not task.name:
+            raise ConfigError("任务必须有稳定的 name（默认 module.qualname，或显式 name=…）")
+        if task.priority is not None:
+            validate_priority(task.priority, where=f"task {task.name} priority")
+        existing = self._tasks.get(task.name)
+        if existing is not None and existing is not task:
+            raise ConfigError(f"任务名重复：{task.name}")
+        self._tasks[task.name] = task
+        return task
+
+    def schedule(self, *entries: Schedule) -> None:
+        """注册定时调度（`taskmq beat` / `taskmq dev` 用，§13）。"""
+        for entry in entries:
+            if not isinstance(entry, Schedule):
+                raise ConfigError(f"schedule() 需要 Schedule 对象（用 cron()/every() 构造），收到 {entry!r}")
+            self._schedules.append(entry)
+
+    @property
+    def schedules(self) -> list[Schedule]:
+        return list(self._schedules)
+
+    def add_sink(self, sink: EventSink) -> None:
+        """挂事件接收器（测试用 `CollectingSink`；OTel 适配器实现同一协议）。"""
+        self._sinks.append(sink)
+
+    def emit(self, event: str, **fields: Any) -> None:
+        """发一条结构化事件；sink 抛异常不影响主流程。"""
+        if not self._sinks:
+            return
+        payload: dict[str, Any] = {"ts": time.time(), "event": event, **fields}
+        for sink in self._sinks:
+            try:
+                sink.emit(payload)
+            except Exception:  # pragma: no cover - 事件不能影响业务
+                logger.exception("事件 sink 抛异常（已忽略）：%s", event)
+
+    def register_codec(
+        self,
+        type_: type,
+        encode: Callable[[Any], Any],
+        decode: Callable[[Any], Any],
+        *,
+        tag: str | None = None,
+    ) -> None:
+        """注册自定义类型的编解码；未注册的类型在**编码期**报错。"""
+        self._codec_registry.register(type_, encode, decode, tag=tag)
+
+    # ------------------------------------------------------- codec / transport
+    @property
+    def codec(self) -> Codec:
+        if self._codec is None:
+            self._codec = get_codec(self.config.serializer, self._codec_registry)
+        return self._codec
+
+    @property
+    def transport(self) -> Transport:
+        if self._transport is None:
+            self._transport = self._make_transport()
+        return self._transport
+
+    def _make_transport(self) -> Transport:
+        url = self.config.transport
+        if not isinstance(url, str):
+            return url
+        scheme = url.split("://", 1)[0]
+        if scheme == "memory":
+            transport = MemoryTransport(idempotency_ttl=self.config.idempotency_ttl)
+            transport.set_queue_weights(
+                {name: queue.weight for name, queue in self.config.queues.items()}
+            )
+            return transport
+        if scheme == "sqlite":
+            path = url[len("sqlite://") :]
+            if path.startswith("/"):  # sqlite:///rel.db -> rel.db；sqlite:////abs.db -> /abs.db
+                path = path[1:]
+            if not path:
+                raise ConfigError("sqlite:// 需要文件路径，例如 sqlite:///./taskmq.db")
+            return SqliteTransport(
+                path,
+                codec=self.codec,
+                registry=self._codec_registry,
+                idempotency_ttl=self.config.idempotency_ttl,
+                max_message_bytes=self.config.max_message_bytes,
+                queue_weights={name: q.weight for name, q in self.config.queues.items()},
+            )
+        raise ConfigError(f"未知的 transport scheme：{scheme}://")
+
+    def close(self) -> None:
+        self._closed = True
+        if self._transport is not None:
+            self._transport.close()
+            self._transport = None
+
+    # ------------------------------------------------------------ 优先级解析
+    def resolve_priority(
+        self,
+        task: Task[Any, Any] | None = None,
+        *,
+        queue: str | None = None,
+        priority: int | None = None,
+    ) -> int:
+        """解析顺序（P2）：submit > task > QueueConfig.priority > Config.default_priority。"""
+        if priority is not None:
+            return validate_priority(priority, where="submit(priority=…)")
+        if task is not None and task.priority is not None:
+            return validate_priority(task.priority, where=f"task {task.name} priority")
+        queue_name = queue or (task.queue if task is not None else None) or self.config.default_queue
+        queue_config = self.config.queues.get(queue_name)
+        if queue_config is not None:
+            return validate_priority(queue_config.priority, where=f"queue {queue_name} priority")
+        return validate_priority(self.config.default_priority, where="Config.default_priority")
+
+    # ---------------------------------------------------------------- submit
+    def submit(
+        self,
+        task: Task[Any, Any] | str,
+        args: Sequence[Any] = (),
+        kwargs: Mapping[str, Any] | None = None,
+        *,
+        queue: str | None = None,
+        priority: int | None = None,
+        eta: Any = None,
+        expires: float | None = None,
+        key: str | None = None,
+        headers: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
+        ack: str | None = None,
+    ) -> TaskHandle[Any]:
+        if self._closed:
+            raise TaskError("App 已关闭")
+        if isinstance(task, str):
+            resolved = self.task_for(task)
+            if resolved is None:
+                raise TaskError(f"未注册的任务：{task!r}")
+            task = resolved
+
+        env = self._build_envelope(
+            task,
+            args,
+            kwargs,
+            queue=queue,
+            priority=priority,
+            eta=eta,
+            expires=expires,
+            key=key,
+            headers=headers,
+            timeout=timeout,
+            ack=ack,
+        )
+        # 生产者侧校验：类型白名单 + 大小上限（§8），不让 broker 才炸
+        self.codec.encode(env, max_bytes=self.config.max_message_bytes)
+
+        self.emit(
+            "task.submitted",
+            job_id=env.id,
+            task=env.task,
+            queue=env.queue,
+            priority=env.priority,
+            key=env.key,
+        )
+        if self.config.eager:
+            self._run_eager(task, env)
+        else:
+            delay = max(0.0, env.eta - time.time()) if env.eta is not None else 0.0
+            self.transport.enqueue(env, queue=env.queue, delay=delay, priority=env.priority)
+        return TaskHandle(self, env.id)
+
+    def call(
+        self,
+        task: Task[Any, Any] | str,
+        args: Sequence[Any] = (),
+        kwargs: Mapping[str, Any] | None = None,
+        **options: Any,
+    ) -> Any:
+        """同步在**本进程**执行一次（CLI `taskmq call` / 调试用），不经过 reserve/ack。"""
+        resolved = self.task_for(task) if isinstance(task, str) else task
+        if resolved is None:
+            raise TaskError(f"未注册的任务：{task!r}")
+        env = self._build_envelope(resolved, args, kwargs, **options)
+        self.codec.encode(env, max_bytes=self.config.max_message_bytes)
+        return self._run_eager(resolved, env)
+
+    def _build_envelope(
+        self,
+        task: Task[Any, Any],
+        args: Sequence[Any],
+        kwargs: Mapping[str, Any] | None,
+        *,
+        queue: str | None = None,
+        priority: int | None = None,
+        eta: Any = None,
+        expires: float | None = None,
+        key: str | None = None,
+        headers: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
+        ack: str | None = None,
+    ) -> Envelope:
+        queue_name = queue or task.queue or self.config.default_queue
+        resolved_priority = self.resolve_priority(task, queue=queue_name, priority=priority)
+
+        eta_absolute = _normalize_eta(eta)
+        expires_value = expires if expires is not None else task.expires
+        expires_at = time.time() + float(expires_value) if expires_value is not None else None
+        timeout_value = timeout if timeout is not None else task.timeout
+        # 软超时：deadline 在入队时计算（排队也算预算）；Phase 1 再提供「执行时计算」的选项。
+        deadline = time.time() + float(timeout_value) if timeout_value is not None else None
+        ack_value = ack or task.ack or ACK_ON_SUCCESS
+        if ack_value not in ACK_STRATEGIES:
+            raise ConfigError(f"ack 可选 {ACK_STRATEGIES}，收到 {ack_value!r}")
+
+        concurrency_key: str | None = None
+        if task.concurrency_key:
+            try:
+                concurrency_key = task.concurrency_key.format(*args, **(kwargs or {}))
+            except (KeyError, IndexError) as exc:
+                raise ConfigError(
+                    f"concurrency_key 模板 {task.concurrency_key!r} 无法用本次参数渲染：{exc}"
+                ) from exc
+
+        return Envelope(
+            task=task.name,
+            args=tuple(args),
+            kwargs=dict(kwargs or {}),
+            queue=queue_name,
+            priority=resolved_priority,
+            eta=eta_absolute,
+            expires_at=expires_at,
+            deadline=deadline,
+            attempt=1,
+            max_attempts=(
+                task.retry_policy.max_attempts if task.retry_policy is not None else task.max_deliveries
+            ),
+            ack=ack_value,
+            key=key,
+            concurrency_key=concurrency_key,
+            headers=dict(headers or {}),
+        )
+
+    # ------------------------------------------------------------------ eager
+    def _run_eager(self, task: Task[Any, Any], env: Envelope) -> Any:
+        """`eager=True`：跳过 transport 的 reserve/ack，直接执行并写 job 状态（异常向外抛）。"""
+        transport = self.transport
+        transport.set_state(
+            env.id,
+            JobState.RUNNING,
+            task=env.task,
+            attempt=env.attempt,
+            queue=env.queue,
+            priority=env.priority,
+            worker="eager",
+        )
+        ctx = TaskContext(
+            app=self,
+            envelope=env,
+            worker_id="eager",
+            attempt=env.attempt,
+            deliveries=1,
+            priority=env.priority,
+            queue=env.queue,
+        )
+        token = _set_current(ctx)
+        started = time.monotonic()
+        state = JobState.FAILED
+        result: Any = None
+        failure: BaseException | None = None
+        try:
+            task.before_start(ctx)
+            result = task.run(*env.args, **env.kwargs)
+        except BaseException as exc:
+            failure = exc
+            transport.set_state(
+                env.id,
+                JobState.FAILED,
+                task=env.task,
+                attempt=env.attempt,
+                error=error_text(exc),
+                worker="eager",
+                runtime=round(time.monotonic() - started, 6),
+            )
+            run_hook(task, "on_failure", ctx, exc)
+            raise
+        else:
+            runtime = round(time.monotonic() - started, 6)
+            state = JobState.SUCCEEDED
+            transport.set_state(
+                env.id,
+                JobState.SUCCEEDED,
+                task=env.task,
+                attempt=env.attempt,
+                result=result,
+                worker="eager",
+                runtime=runtime,
+            )
+            run_hook(task, "on_success", ctx, result, runtime)
+            return result
+        finally:
+            run_hook(task, "after_return", ctx, state, result, failure)
+            _reset_current(token)
+
+
+def _normalize_eta(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"eta 必须是秒数、datetime 或 None，收到 {value!r}")
+    return time.time() + float(value)
+
+
+__all__ = ["App"]

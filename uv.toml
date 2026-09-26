@@ -1,0 +1,5 @@
+# uv 配置（随工程走）。
+# 受沙箱限制时 HOME 下的 ~/.cache/uv 不可写，所以把 cache 放进工程目录（已 .gitignore）。
+# 注意：托管 Python 的目录是全局设置，只能用环境变量 UV_PYTHON_INSTALL_DIR 指定，
+# 见 Makefile 与 README「开发环境（uv）」。
+cache-dir = ".uv-cache"
