@@ -315,11 +315,14 @@ def send_email(to: str) -> str: ...
 
 @app.task(queue="report", concurrency_key="user:{user}")  # 同 user 在集群内串行
 def build_report(user: str) -> str: ...
+
+build_report.delay(user="u1")            # 模板用**关键字参数**渲染；位置参数请写成 "user:{}"
 ```
 
 两者都在「还没真正执行」时用 `transport.defer()` 放回队列，**不消耗 `deliveries`**，
 因此不会被毒丸保护误送 DLQ；`concurrency_key` 用 transport 命名租约（SQLite 走 `leases` 表）跨
-worker 互斥，租约到期自动释放。
+worker 互斥，租约到期自动释放。模板在 **submit 时**用任务的 kwargs 渲染（位置参数用 `{}`），
+渲染失败会立刻抛 `ConfigError`。
 
 ## 任务定义的三种写法（能力等价）
 
@@ -381,6 +384,26 @@ def send_email_bound(self, to: str, subject: str) -> str:
 | 9 | 优先级 | **方案 D**：全局严格优先 + 让位 + 平级队列轮询（P1–P19 见 [priority.md](docs/design/priority.md)） |
 
 完整设计：[docs/design.md](docs/design.md) 与分册 [docs/design/](docs/design/)。
+
+## 给 AI agent 的 skill
+
+仓库自带一个 [skill](skills/taskmq/SKILL.md)：把「用 taskmq 写代码 / 排查 / 改本仓库」的规矩、API 速查与可复制配方
+分三层放好（`SKILL.md` 入口 → `references/` 按需加载 → `scripts/smoke.py` 冒烟验证）：
+
+```text
+skills/taskmq/
+├── SKILL.md                      触发条件 + 心智模型 + 最容易踩的 8 个坑 + 关键事实
+├── references/usage.md           完整用法（任务/选项/transport/worker/工作流/beat/CLI/测试/排查表）
+├── references/recipes.md         可直接抄的配方（幂等、延迟、限流、串行、DLQ、优雅停机、DAG、上线检查单）
+├── references/contributing.md    在本仓库改代码：uv 开发流、3.9 兼容写法、测试与容器、发版链路
+├── scripts/smoke.py              冒烟：`python skills/taskmq/scripts/smoke.py`
+└── evals/evals.json              skill 触发/输出质量的评测用例
+```
+
+用法：把 `skills/taskmq/` 拷或软链到 agent 的 skill 目录（如 `~/.claude/skills/taskmq` 或项目内
+`.claude/skills/taskmq`），或者在提示里直接指向 `skills/taskmq/SKILL.md`。
+文档（Markdown）改动会被 `make check` / docs 工作流里的 [scripts/check_docs.py](scripts/check_docs.py) 体检
+（代码围栏配平、反引号装饰器），避免「渲染出来是坏的」这类问题。
 
 ## 发版
 

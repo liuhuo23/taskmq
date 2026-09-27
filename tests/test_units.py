@@ -681,6 +681,54 @@ def test_beat_run_forever_and_context_manager(tmp_path, monkeypatch):
         assert isinstance(managed, Beat)
 
 
+# ================================================================= App 层幂等键
+def test_idempotency_key_returns_existing_job_id():
+    """App 层幂等键：第二次提交不能产生新 job —— 否则 handle 指向一个不存在的 job。
+
+    回归：`Transport.enqueue` 命中幂等键时会返回**已存在**的 job id（见 transport/base.py 的契约），
+    但 `App.submit` 曾经忽略这个返回值，于是 `handle.get()` 必然等到超时。
+    """
+    from taskmq.testing import run_until_idle
+
+    app = App(Config(transport="memory://", events="null"))
+
+    @app.task(queue="idem")
+    def echo(value: str) -> str:
+        return value
+
+    first = echo.apply_async(("a",), key="same-key")
+    second = echo.apply_async(("a",), key="same-key")
+    assert first.id == second.id, "幂等键命中时应返回已存在的 job id"
+    assert app.transport.queue_stats(["idem"])[0].pending == 1, "不该入队第二条"
+
+    run_until_idle(app, queues=["idem"])
+    assert first.get(timeout=5) == "a"
+    assert second.get(timeout=5) == "a"          # 同一个 job，同一个结果
+    app.close()
+
+
+def test_submit_delay_and_eta_are_relative_seconds():
+    """`delay=` 是相对秒数；`eta` 给数字也按相对秒数（不是绝对时间戳）；同时给时取较晚者。"""
+    from taskmq.testing import run_until_idle
+
+    app = App(Config(transport="memory://", events="null"))
+
+    @app.task(queue="later")
+    def ping() -> str:
+        return "pong"
+
+    now = ping.apply_async((), queue="now", delay=0)
+    # 长延迟的消息放**另一个队列**：run_until_idle 会把"还没到点"的消息也算未完成，同一队列会等满 timeout
+    hour = ping.apply_async((), queue="later", delay=3600)
+    both = ping.apply_async((), queue="later", eta=60, delay=3600)   # 取较晚的 → 1 小时后
+    run_until_idle(app, queues=["now"], timeout=10)
+
+    assert now.get(timeout=5) == "pong"
+    for handle, why in ((hour, "delay=3600"), (both, "eta=60 + delay=3600")):
+        assert handle.state == JobState.QUEUED, f"{why} 不该立刻执行（当前 {handle.state}）"
+    app.close()
+
+
 # ============================================================== Redis Cluster 槽位
 def test_crc16_and_hash_slot_match_redis_cluster_rules():
     """slot 算法必须与 Redis 一致（值取自 `CLUSTER KEYSLOT` 实测）。"""

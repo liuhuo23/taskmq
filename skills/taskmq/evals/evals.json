@@ -1,0 +1,23 @@
+{
+  "skill_name": "taskmq",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "用 taskmq 写一个发邮件的后台任务：FastAPI 接口提交，失败按指数退避重试最多 3 次，超时 30 秒；再告诉我 worker 怎么起。",
+      "expected_output": "可运行的 myapp/tasks.py（App + @app.task(queue=..., retry=Retry(...), timeout=...)）+ apply_async 提交 + `taskmq worker -Q <同一队列>` 命令；能指出 delay() 只收任务参数。",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "我们的 Redis 队列里，同一个用户的任务偶尔并发跑两次，重复扣款了。用 taskmq 怎么修？",
+      "expected_output": "解释 at-least-once + 租约重投是重复来源；给出 concurrency_key 串行 + 提交幂等键 + 业务幂等（或状态机）的组合方案，并提醒 lease 与长任务的关系。",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "把 taskmq-py 升到最新版并在本机跑通一次端到端，然后说明怎么发一个新版本。",
+      "expected_output": "pip install -U taskmq-py（或 pip install taskmq-py）+ 最小端到端（sqlite/memory + run_until_idle）；发版只需改 pyproject.toml 的 version 合进 main，之后 CI → GitHub Release → PyPI 全自动。",
+      "files": []
+    }
+  ]
+}

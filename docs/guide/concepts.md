@@ -85,12 +85,16 @@ send_email.apply_async(("a@b.com", "hi"), key="welcome:a@b.com")
 同一个 `key` 在 `idempotency_ttl`（默认 1 天）内只会入队一次，返回同一个 job id——
 重复提交（用户连点、上游重试）不会产生第二条消息。
 
-## 可见性：`eta` / `delay` / `expires_at`
+## 可见性：`delay` / `eta` / `expires`
 
 ```python
-send_email.apply_async(("a@b.com", "hi"), delay=60)              # 60 秒后才可见
-send_email.apply_async(("a@b.com", "hi"), eta=time.time() + 60)   # 绝对时间
-send_email.apply_async(("a@b.com", "hi"), expires_at=time.time() + 3600)  # 过期就不执行了
+from datetime import datetime, timedelta, timezone
+
+send_email.apply_async(("a@b.com", "hi"), delay=60)      # 相对延迟：60 秒后才可见
+send_email.apply_async(("a@b.com", "hi"), eta=60)        # eta 给数字也按**相对秒数**算
+send_email.apply_async(("a@b.com", "hi"),
+                       eta=datetime.now(timezone.utc) + timedelta(hours=1))   # 绝对时间用 datetime
+send_email.apply_async(("a@b.com", "hi"), expires=3600)  # 秒：1 小时内没开始执行就作废（EXPIRED）
 ```
 
 过期的消息在 promote/claim 时被判定为 `EXPIRED`，不会执行；对应 job 状态也会变成 `EXPIRED`。

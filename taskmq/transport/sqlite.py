@@ -658,18 +658,28 @@ class SqliteTransport(Transport):
         return int(cursor.rowcount)
 
     def _expire_overdue_locked(self, now: float) -> int:
-        cursor = self._conn.execute(
-            "UPDATE messages SET state='expired', dead_reason='expired' WHERE state='queued'"
+        rows = self._conn.execute(
+            "SELECT id, job_id FROM messages WHERE state='queued'"
             " AND expires_at IS NOT NULL AND expires_at<=?",
             (now,),
+        ).fetchall()
+        if not rows:
+            return 0
+        message_ids = [int(row["id"]) for row in rows]
+        job_ids = [str(row["job_id"]) for row in rows]
+        self._conn.execute(
+            "UPDATE messages SET state='expired', dead_reason='expired'"
+            f" WHERE id IN ({','.join('?' * len(message_ids))})",
+            message_ids,
         )
-        if cursor.rowcount:
-            self._conn.execute(
-                "UPDATE jobs SET state=?, error='expired before execution', updated_at=?"
-                " WHERE state IN (?,?)",
-                (JobState.EXPIRED, now, JobState.QUEUED, JobState.RETRYING),
-            )
-        return int(cursor.rowcount)
+        # 只改**这些消息**对应的 job：以前这里漏了 job_id 过滤，于是任何一条消息过期都会把
+        # 所有 QUEUED/RETRYING 的 job 一起标成 EXPIRED（延迟/退避中的任务会被误判为过期）。
+        self._conn.execute(
+            "UPDATE jobs SET state=?, error='expired before execution', updated_at=?"
+            f" WHERE job_id IN ({','.join('?' * len(job_ids))}) AND state IN (?,?)",
+            (JobState.EXPIRED, now, *job_ids, JobState.QUEUED, JobState.RETRYING),
+        )
+        return len(message_ids)
 
     def reap_expired_leases(self, now: float | None = None) -> int:
         moment = self._now() if now is None else float(now)

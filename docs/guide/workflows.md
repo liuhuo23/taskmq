@@ -5,7 +5,7 @@
 ```python
 from taskmq.workflow import WorkflowBuilder
 
-`app.workflow("etl")
+@app.workflow("etl")
 def etl(wf: WorkflowBuilder, source: str):                 # 参数按关键字传入
     extract = wf.step("extract", extract_task, args=(source,))
     clean   = wf.step("clean", clean_task, deps={"rows": extract})      # 上游结果按参数名注入
@@ -70,19 +70,19 @@ from taskmq import App, Config, Retry
 
 app = App(Config(transport="sqlite:///./taskmq.db"))
 
-`app.task(name="etl.extract", queue="etl", retry=Retry(max_attempts=3))
+@app.task(name="etl.extract", queue="etl", retry=Retry(max_attempts=3))
 def extract(source: str) -> list[dict]:
     return read_csv(source)
 
-`app.task(name="etl.clean", queue="etl")
+@app.task(name="etl.clean", queue="etl")
 def clean(rows: list[dict]) -> list[dict]:
     return [normalize(r) for r in rows]
 
-`app.task(name="etl.stats", queue="etl")
+@app.task(name="etl.stats", queue="etl")
 def stats(rows: list[dict]) -> dict:
     return summarize(rows)
 
-`app.task(name="etl.report", queue="etl")
+@app.task(name="etl.report", queue="etl")
 def report(tables: list) -> str:
     return render(tables)
 ```

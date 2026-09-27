@@ -540,6 +540,7 @@ class App:
         queue: str | None = None,
         priority: int | None = None,
         eta: Any = None,
+        delay: float | None = None,
         expires: float | None = None,
         key: str | None = None,
         headers: Mapping[str, Any] | None = None,
@@ -561,6 +562,7 @@ class App:
             queue=queue,
             priority=priority,
             eta=eta,
+            delay=delay,
             expires=expires,
             key=key,
             headers=headers,
@@ -570,20 +572,32 @@ class App:
         # 生产者侧校验：类型白名单 + 大小上限（§8），不让 broker 才炸
         self.codec.encode(env, max_bytes=self.config.max_message_bytes)
 
+        if self.config.eager:
+            self.emit(
+                "task.submitted",
+                job_id=env.id,
+                task=env.task,
+                queue=env.queue,
+                priority=env.priority,
+                key=env.key,
+            )
+            self._run_eager(task, env)
+            return TaskHandle(self, env.id)
+
+        delay = max(0.0, env.eta - time.time()) if env.eta is not None else 0.0
+        # 幂等键命中时 transport **不重复入队**，并返回已存在的 job id（见 Transport.enqueue 契约）：
+        # 句柄必须跟着它，否则调用方拿到的是一个没有 job 记录的 id（handle.get() 会一直等到超时）。
+        job_id = self.transport.enqueue(env, queue=env.queue, delay=delay, priority=env.priority)
         self.emit(
             "task.submitted",
-            job_id=env.id,
+            job_id=job_id,
             task=env.task,
             queue=env.queue,
             priority=env.priority,
             key=env.key,
+            deduplicated=job_id != env.id,
         )
-        if self.config.eager:
-            self._run_eager(task, env)
-        else:
-            delay = max(0.0, env.eta - time.time()) if env.eta is not None else 0.0
-            self.transport.enqueue(env, queue=env.queue, delay=delay, priority=env.priority)
-        return TaskHandle(self, env.id)
+        return TaskHandle(self, job_id or env.id)
 
     def call(
         self,
@@ -609,6 +623,7 @@ class App:
         queue: str | None = None,
         priority: int | None = None,
         eta: Any = None,
+        delay: float | None = None,
         expires: float | None = None,
         key: str | None = None,
         headers: Mapping[str, Any] | None = None,
@@ -618,7 +633,11 @@ class App:
         queue_name = queue or task.queue or self.config.default_queue
         resolved_priority = self.resolve_priority(task, queue=queue_name, priority=priority)
 
-        eta_absolute = _normalize_eta(eta)
+        eta_absolute = _normalize_eta(eta)          # 数字=相对秒数，datetime=绝对时间
+        if delay is not None:
+            # delay 是明确的「相对秒数」（与 transport.enqueue 的 delay 同义）；和 eta 同时给时取较晚的
+            delayed = time.time() + max(0.0, float(delay))
+            eta_absolute = delayed if eta_absolute is None else max(eta_absolute, delayed)
         expires_value = expires if expires is not None else task.expires
         expires_at = time.time() + float(expires_value) if expires_value is not None else None
         timeout_value = timeout if timeout is not None else task.timeout
@@ -634,7 +653,9 @@ class App:
                 concurrency_key = task.concurrency_key.format(*args, **(kwargs or {}))
             except (KeyError, IndexError) as exc:
                 raise ConfigError(
-                    f"concurrency_key 模板 {task.concurrency_key!r} 无法用本次参数渲染：{exc}"
+                    f"concurrency_key 模板 {task.concurrency_key!r} 无法用本次参数渲染：{exc}。"
+                    f"模板用关键字参数渲染（如 {task.name}.delay(user=...)）；"
+                    "位置参数要用空占位，例如 concurrency_key='user:{}'"
                 ) from exc
 
         return Envelope(

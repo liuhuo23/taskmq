@@ -9,7 +9,7 @@
 
     app = App(Config(transport="memory://"))
 
-    `app.task(queue="email", retry=Retry(max_attempts=5, backoff="exp"))
+    @app.task(queue="email", retry=Retry(max_attempts=5, backoff="exp"))
     def send_email(to: str, subject: str) -> str:
         return smtp_send(to, subject)
     ```
@@ -46,7 +46,7 @@
 === "bind=True（函数式也能拿到实例）"
 
     ```python
-    `app.task(bind=True, queue="email", retry=Retry(max_attempts=3))
+    @app.task(bind=True, queue="email", retry=Retry(max_attempts=3))
     def send_email(self, to: str, subject: str) -> str:
         self.request.log.info("sending", attempt=self.request.attempt)
         if rate_limited():
@@ -87,10 +87,10 @@ send_email.apply_async(                                  # 带投递选项
     ("a@b.com", "hi"),
     queue="email",
     priority=Priority.HIGH,
-    delay=30,                     # 相对延迟（秒）
-    eta=time.time() + 30,         # 绝对时间
-    expires=3600,                 # 秒；入队时算 expires_at
-    key="welcome:a@b.com",        # 幂等键
+    delay=30,                     # 相对延迟（秒）：30 秒后才可见
+    eta=None,                     # 绝对可见时间用 datetime；给数字则按相对秒数（等同 delay）
+    expires=3600,                 # 秒：1 小时内没开始执行就作废（EXPIRED）
+    key="welcome:a@b.com",        # 幂等键（窗口内只入队一次，且返回同一个 job id）
     timeout=120,                  # 覆盖任务的软超时
 )
 ```
@@ -123,11 +123,13 @@ Retry(
 ## 限流与按 key 串行
 
 ```python
-`app.task(queue="email", rate_limit="100/m")
+@app.task(queue="email", rate_limit="100/m")
 def send_email(to: str) -> str: ...
 
-`app.task(queue="report", concurrency_key="user:{user}")
+@app.task(queue="report", concurrency_key="user:{user}")
 def build_report(user: str) -> str: ...
+
+build_report.delay(user="u1")     # 模板用关键字参数渲染；位置参数写成 "user:{}"
 ```
 
 两者都在**还没真正执行**时用 `transport.defer()` 放回队列，**不消耗 `deliveries`**，
@@ -137,7 +139,7 @@ def build_report(user: str) -> str: ...
 ## 进度上报与日志
 
 ```python
-`app.task(queue="etl")
+@app.task(queue="etl")
 def extract(path: str) -> int:
     ctx = current_task()                      # 或 bind=True 的 self.request
     ctx.update_meta(stage="reading", rows=0)  # 写进 job.meta，status/info 可见

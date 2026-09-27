@@ -29,6 +29,8 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.10"
+      - name: 文档体检（围栏配平 / 反引号装饰器）
+        run: uv run --no-project python scripts/check_docs.py
       - name: 构建文档（严格模式）
         # 文档工具不进项目依赖，也不动 uv.lock：CI 里临时装
         run: uv run --with "mkdocs-material>=9,<10" mkdocs build --strict

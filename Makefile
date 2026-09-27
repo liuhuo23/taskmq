@@ -32,7 +32,7 @@ endif
 
 .PHONY: venv sync test test-py39 lint fmt typecheck typecheck-mypy typecheck-pyright coverage \
 	pg-up pg-down test-postgres mq-up mq-down test-amqp redis-cluster-up redis-cluster-down \
-	test-redis-cluster check clean
+	test-redis-cluster docs-check check clean
 
 venv:            ## 不用 uv 的开发环境：venv + pip install -e ".[dev]"
 	$(PYTHON) -m venv .venv
@@ -123,7 +123,10 @@ redis-cluster-down:  ## 删掉测试容器
 test-redis-cluster:  ## 只跑 Redis Cluster 测试（默认连上面的容器）
 	TASKMQ_TEST_REDIS_CLUSTER_URL=$(REDIS_CLUSTER_URL) $(PYTEST) tests/test_redis_cluster.py
 
-check: lint typecheck test  ## 本地 CI 等价检查
+docs-check:      ## 文档体检（代码围栏配平 / 反引号装饰器）
+	$(PYTHON) scripts/check_docs.py
+
+check: lint typecheck test docs-check  ## 本地 CI 等价检查
 
 clean:
 	rm -rf .venv .venv39 .uv-cache .uv-python .pytest_cache .ruff_cache .mypy_cache

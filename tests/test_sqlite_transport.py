@@ -103,6 +103,29 @@ def test_expires_and_idempotency(tmp_path):
     assert record is not None and record.state == "EXPIRED"
 
 
+def test_reap_expired_jobs_does_not_touch_other_jobs(tmp_path):
+    """回归：一条消息过期不能把别的 QUEUED/RETRYING job 也标成 EXPIRED。
+
+    之前 `_expire_overdue_locked` 的 UPDATE jobs 少了 job_id 过滤，于是延迟/退避中的任务
+    （`delay=3600` 这种）会被误判成"过期"，`handle.state` 直接变 EXPIRED。
+    """
+    envelope = __import__("taskmq").Envelope
+    clock = FakeClock()
+    transport = _transport(tmp_path / "t.db", clock=clock)
+
+    expiring = transport.enqueue(envelope(task="expiring", expires_at=clock.now + 5), queue="q")
+    delayed = transport.enqueue(envelope(task="delayed"), queue="later", delay=3600)
+    queued = transport.enqueue(envelope(task="queued"), queue="q")
+
+    clock.advance(6)
+    assert transport.reap_expired_jobs() == 1
+
+    assert transport.get_state(expiring).state == "EXPIRED"
+    for job_id, task in ((delayed, "delayed"), (queued, "queued")):
+        record = transport.get_state(job_id)
+        assert record is not None and record.state == "QUEUED", f"{task} 被误判：{record.state}"
+
+
 def test_dlq_and_replay_with_priority_override(tmp_path):
     envelope = __import__("taskmq").Envelope
     transport = _transport(tmp_path / "t.db")
