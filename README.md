@@ -30,7 +30,7 @@ pip install "taskmq-py[postgres,amqp,otel]"            # 需要哪个后端就�
 
 # 也可以从源码 / Release 装：
 #   pip install "taskmq-py @ git+https://github.com/liuhuo23/taskmq"
-#   pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq_py-0.1.0-py3-none-any.whl
+#   或从 https://github.com/liuhuo23/taskmq/releases 下载对应版本的 wheel 再 pip install ./taskmq_py-*.whl
 
 taskmq --version              # console script（装包后就有）
 python -m taskmq --version    # 没进 PATH / 源码目录临时跑，等价
@@ -385,7 +385,7 @@ def send_email_bound(self, to: str, subject: str) -> str:
 ## 发版
 
 CI 在 `main` 上全绿后，[release.yml](.github/workflows/release.yml) 会自动把 `pyproject.toml` 的版本
-打成 tag + GitHub Release（`0.1.0.dev0` → `v0.1.0`，同名 tag 已存在就跳过，幂等）。
+打成 tag + GitHub Release（`0.1.2.dev0` → `v0.1.2`，同名 tag 已存在就跳过，幂等）。
 发下一个版本：改 `version`，合进 `main` 即可；CI 跑 ruff + mypy + pyright + 全量 pytest
 （Redis / Redis Cluster / PostgreSQL / RabbitMQ 都是真服务，见 [ci.yml](.github/workflows/ci.yml)）。
 

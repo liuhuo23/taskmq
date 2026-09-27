@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # 分发名 ≠ import 名：PyPI 上 `taskmq` 与已有的 `task-mq` 被判为"过于相似"（去分隔符后同名），
 # 所以分发名用 `taskmq-py`；安装后依然是 `import taskmq` + `taskmq` 命令。
 name = "taskmq-py"
-version = "0.1.0"
+version = "0.1.1"
 description = "零外部服务、投递语义可预测、配置显式的 Python 分布式任务队列"
 readme = "README.md"
 requires-python = ">=3.9"

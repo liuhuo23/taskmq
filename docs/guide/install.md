@@ -32,7 +32,7 @@
 === "Releases 里的 wheel"
 
     ```bash
-    pip install https://github.com/liuhuo23/taskmq/releases/download/v0.1.0/taskmq_py-0.1.0-py3-none-any.whl
+    pip install ./taskmq_py-0.1.1-py3-none-any.whl      # 从 Releases 页面下载对应版本的 wheel
     ```
 
 === "源码 + 开发依赖（贡献代码）"
