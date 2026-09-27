@@ -35,6 +35,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      exists: ${{ steps.seen.outputs.exists }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -46,6 +48,20 @@ jobs:
         run: |
           ls -l dist/
           uvx twine check dist/*
+      - name: 这个版本是不是已经发过了（幂等）
+        id: seen
+        env:
+          TARGET: ${{ inputs.target || 'pypi' }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$TARGET" = "testpypi" ]; then host=test.pypi.org; else host=pypi.org; fi
+          if curl -fsS "https://$host/pypi/taskmq-py/$version/json" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "taskmq-py $version 已经在 $TARGET 上了，跳过发布"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: dist
@@ -53,6 +69,7 @@ jobs:
 
   publish:
     needs: build
+    if: needs.build.outputs.exists == 'false'
     runs-on: ubuntu-latest
     environment:
       name: pypi

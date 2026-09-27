@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  actions: write      # 用 GITHUB_TOKEN 触发 pypi.yml（见下面那步的注释）
 
 jobs:
   release:
@@ -57,3 +58,10 @@ jobs:
             --target "${{ github.event.workflow_run.head_sha }}" \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
+      - name: 触发 PyPI 发布（pypi.yml）
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # 注意：GITHUB_TOKEN 创建的 Release 事件**不会再触发**其它 workflow（GitHub 防递归），
+        # 所以这里显式 dispatch。pypi.yml 自己会判断"这个版本是不是已经发过"，重复触发无害。
+        run: gh workflow run pypi.yml --ref main -f target=pypi
