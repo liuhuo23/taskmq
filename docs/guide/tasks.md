@@ -77,6 +77,14 @@
 | `expires` | 无 | 秒；超过这个时间还没开始执行就作废（`EXPIRED`） |
 | `ack` | `on_success` | `on_receipt`（收到即 ack）/ `on_success` / `on_completion` |
 | `max_deliveries` | 5（或 `Retry.max_attempts`） | 毒丸保护：投递次数上限，超过进 DLQ |
+| `store_result` | `True` | 是否把返回值写进 job 记录；`False` 时 `handle.get()` 返回 `None` |
+
+> **返回值存在哪**：没有独立结果后端时，返回值就写在 transport 的 job 记录里（sqlite/PG/Redis 的那张 job 表），
+> **没有大小上限**——几 MB 的返回值会直接把库撑大。大结果或敏感结果用 `@app.task(store_result=False)` 关掉，
+> 需要结果就自己落到对象存储/数据库。
+>
+> `Config(result=..., result_ttl=...)`（独立结果后端）目前**只做校验、尚未实现**，配置它会打一条告警；
+> 别把它当成"结果不占队列库"的手段。
 
 ## 提交选项
 

@@ -25,7 +25,7 @@ from ..errors import ConfigError, LeaseLost, TaskTimeout
 from ..protocol import ACK_ON_RECEIPT, ACK_ON_SUCCESS
 from ..ratelimit import RateLimit, TokenBucket
 from ..task import Task, TaskContext, _reset_current, _set_current
-from ..transport.base import Delivery, JobState
+from ..transport.base import UNSET, Delivery, JobState
 from ..workflow import decode_node_header
 from .execution import BodyOutcome, ChildTask, decide_retry, execute_task
 from .pool import Pool, make_pool
@@ -52,7 +52,13 @@ class Worker:
         self.app_spec = app_spec or os.environ.get("TASKMQ_APP") or ""
         self.config = app.config
         self.transport = app.transport
-        self.queues = tuple(queues) if queues else (self.config.default_queue,)
+        resolved_queues: tuple[str, ...] = (
+            (self.config.default_queue,) if queues is None else tuple(queues)
+        )
+        if not resolved_queues:
+            # 显式给空列表多半是拼错了：静默退化成 default_queue 会让 worker 空转在错误的队列上
+            raise ConfigError("Worker 至少要订阅一个队列（queues=None 才表示用 default_queue）")
+        self.queues = resolved_queues
         self.worker_id = worker_id or f"w-{os.getpid()}-{secrets.token_hex(3)}"
         self.concurrency = max(1, int(concurrency if concurrency is not None else self.config.concurrency))
         self.prefetch = max(
@@ -470,7 +476,8 @@ class Worker:
                 JobState.SUCCEEDED,
                 task=env.task,
                 attempt=delivery.attempt,
-                result=outcome.result,
+                # store_result=False → 不落库（结果可能很大或含敏感信息）；handle.get() 会返回 None
+                result=outcome.result if task.store_result else UNSET,
                 worker=self.worker_id,
                 runtime=outcome.runtime,
                 queue=delivery.queue,

@@ -707,6 +707,46 @@ def test_idempotency_key_returns_existing_job_id():
     app.close()
 
 
+def test_store_result_false_does_not_persist_result():
+    """@app.task(store_result=False)`：不把返回值写进 job 记录（大结果/敏感结果用）。
+
+    这个开关以前是"死开关"（定义了但没人读），结果照样落库。
+    """
+    from taskmq.testing import run_until_idle
+
+    app = App(Config(transport="memory://", events="null"))
+
+    @app.task(queue="q", store_result=False)
+    def secret() -> str:
+        return "敏感返回值" * 100
+
+    @app.task(queue="q")
+    def normal() -> str:
+        return "ok"
+
+    hidden = secret.delay()
+    shown = normal.delay()
+    run_until_idle(app, queues=["q"])
+
+    record = app.transport.get_state(hidden.id)
+    assert record is not None and record.state == JobState.SUCCEEDED
+    assert record.has_result is False, "store_result=False 不该落结果"
+    assert hidden.get(timeout=2) is None, "不存结果时 get() 返回 None"
+    assert shown.get(timeout=2) == "ok"                    # 默认仍然存
+    app.close()
+
+
+def test_worker_rejects_empty_queue_list():
+    """`Worker(queues=[])` 必须报错：以前会静默退化成 default_queue，worker 空转在错的队列上。"""
+    from taskmq.errors import ConfigError
+    from taskmq.worker.runner import Worker
+
+    app = App(Config(transport="memory://", events="null"))
+    with pytest.raises(ConfigError, match="至少要订阅一个队列"):
+        Worker(app, queues=[])
+    app.close()
+
+
 def test_submit_delay_and_eta_are_relative_seconds():
     """`delay=` 是相对秒数；`eta` 给数字也按相对秒数（不是绝对时间戳）；同时给时取较晚者。"""
     from taskmq.testing import run_until_idle

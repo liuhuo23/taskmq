@@ -32,6 +32,7 @@ pika 的 `BlockingConnection` 不是线程安全的。Worker 的真实用法是�
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import threading
 import time
@@ -68,6 +69,21 @@ _H_YIELDABLE = "x-taskmq-yieldable"
 _H_EXPIRES = "x-taskmq-expires"
 
 
+#: 侧车里登记"某逻辑队列用过哪些延迟队列"的键前缀
+_DELAYQ_PREFIX = "delayq:"
+
+
+def _delay_ttl_ms(delay: float) -> int:
+    """把延迟量化成整数毫秒，并**向上**对齐到 ≤10%（且 ≤1s）的粒度。
+
+    量化的目的：延迟队列按 TTL 分桶，抖动退避（`jitter=True` 默认开）每次的退避值都不同，
+    不量化会炸出成千上万个队列。向上取整保证"只会晚一点，绝不提前"，误差 ≤10% 且 ≤1s。
+    """
+    ms = max(1.0, float(delay) * 1000.0)
+    resolution = max(10.0, min(1000.0, ms / 10.0))
+    return int(math.ceil(ms / resolution) * resolution)
+
+
 def _import_driver() -> Any:
     try:
         import pika
@@ -82,7 +98,7 @@ class AmqpTransport(Transport):
     #: 支持的资源由侧车决定（命名租约/worker 表/job 枚举都委托给它）
     limitations = {
         "global_priority": "跨队列不做全局严格优先（AMQP 是 per-queue 有序）；同队列内用 x-max-priority 排序",
-        "delay_precision": "延迟用 per-message TTL + DLX，RabbitMQ 只在队头附近过期（小延迟够用）",
+        "delay_precision": "延迟按 TTL 分队列 + DLX；TTL 向上量化到 ≤10%（≤1s），只会略晚不会提前",
         "priority_stats": "AMQP 无按优先级聚合的接口 → priority_stats() 返回空",
         "reap_expired_jobs": "过期在 reserve 时判定；reap_expired_jobs() 是 no-op",
     }
@@ -121,6 +137,9 @@ class AmqpTransport(Transport):
         #: 未确认投递：message_id -> (delivery_tag, 逻辑队列, lease_until, Delivery)
         self._unacked: dict[int, tuple[int, str, float, Delivery]] = {}
         self._delayed: dict[str, list[float]] = {}
+        #: 本进程用过的延迟队列 TTL（毫秒）与已登记标记（跨进程枚举走侧车）
+        self._delay_ttls: dict[str, set[int]] = {}
+        self._delay_registered: set[tuple[str, int]] = set()
         self._rr: dict[tuple[str, ...], int] = {}
         #: 被本进程回收过的 message_id（区分"已 ack 过（幂等）"与"租约被回收（LeaseLost）"）
         self._reaped: dict[int, None] = {}
@@ -173,7 +192,17 @@ class AmqpTransport(Transport):
     def _work(self, queue: str) -> str:
         return f"{self._prefix}{queue}"
 
-    def _delay(self, queue: str) -> str:
+    def _delay(self, queue: str, ttl_ms: int) -> str:
+        """延迟队列名：**按 TTL 分队列**。
+
+        RabbitMQ 只在队头检查 per-message TTL：所有延迟共用一个队列时，队头的长延迟消息会把后面的
+        短延迟消息一起堵住（实测 `delay=0.3s` 排在 `delay=8s` 后面，8 秒后才投出来）。
+        一个 TTL 一个队列，队列内 TTL 一致，就不存在跨 TTL 阻塞。
+        """
+        return f"{self._prefix}{queue}.delay.{ttl_ms}"
+
+    def _legacy_delay(self, queue: str) -> str:
+        """旧版共享延迟队列名（<=0.1.x）：清理与统计时一并考虑。"""
         return f"{self._prefix}{queue}.delay"
 
     def _dlq(self, queue: str) -> str:
@@ -200,22 +229,60 @@ class AmqpTransport(Transport):
         if queue in self._declared:
             return
         channel.queue_declare(queue=self._work(queue), durable=True, arguments=self._work_args(queue))
-        channel.queue_declare(queue=self._delay(queue), durable=True, arguments=self._delay_args(queue))
         channel.queue_declare(queue=self._dlq(queue), durable=True)
         self._declared.add(queue)
 
+    def _declare_delay(self, channel: Any, queue: str, ttl_ms: int) -> None:
+        """声明（并按需登记）某个 TTL 的延迟队列。"""
+        channel.queue_declare(
+            queue=self._delay(queue, ttl_ms), durable=True, arguments=self._delay_args(queue)
+        )
+        self._delay_ttls.setdefault(queue, set()).add(ttl_ms)
+        self._remember_delay_queue(queue, ttl_ms)
+
+    def _remember_delay_queue(self, queue: str, ttl_ms: int) -> None:
+        """把"这个逻辑队列用过哪些延迟队列"登记到侧车 —— `taskmq status` 是另一个进程，
+        只能靠侧车枚举出全部延迟队列，否则 delayed 的消息会漏统计。每进程每个 TTL 只写一次。"""
+        key = (queue, ttl_ms)
+        if key in self._delay_registered:
+            return
+        self._delay_registered.add(key)
+        with contextlib.suppress(Exception):
+            self._state.set_state(
+                f"{_DELAYQ_PREFIX}{queue}:{ttl_ms}",
+                JobState.QUEUED,
+                task="delayq",
+                queue=queue,
+                ttl_ms=ttl_ms,
+            )
+
+    def _known_delay_ttls(self, queue: str) -> list[int]:
+        ttls = set(self._delay_ttls.get(queue, ()))
+        with contextlib.suppress(Exception):
+            for record in self._state.list_jobs(prefix=f"{_DELAYQ_PREFIX}{queue}:", limit=1000):
+                value = record.meta.get("ttl_ms")
+                if value:
+                    ttls.add(int(value))
+        return sorted(ttls)
+
     def _drop_queues(self, queue: str) -> None:
-        """删除本前缀下某逻辑队列的三条 AMQP 队列（测试清理用）。"""
-        for name in (self._work(queue), self._delay(queue), self._dlq(queue)):
+        """删除本前缀下某逻辑队列的全部 AMQP 队列（work / dlq / 各 TTL 的延迟队列；测试清理用）。"""
+        names = [self._work(queue), self._dlq(queue), self._legacy_delay(queue)]
+        names += [self._delay(queue, ttl_ms) for ttl_ms in self._known_delay_ttls(queue)]
+        for name in names:
             with contextlib.suppress(Exception):
                 self._retry(lambda ch, name=name: ch.queue_delete(queue=name))
         self._declared.discard(queue)
+        self._delay_ttls.pop(queue, None)
+        self._delay_registered = {key for key in self._delay_registered if key[0] != queue}
 
     # ------------------------------------------------------------------ 工具
     def _now(self) -> float:
         return float(self._clock())
 
-    def _properties(self, envelope: Envelope, *, message_id: int, priority: int, delay: float | None) -> Any:
+    def _properties(
+        self, envelope: Envelope, *, message_id: int, priority: int, expiration_ms: int | None
+    ) -> Any:
         headers = {
             _H_ID: message_id,
             _H_QUEUE: envelope.queue,
@@ -229,7 +296,7 @@ class AmqpTransport(Transport):
         return self._pika.BasicProperties(
             delivery_mode=2,                              # 持久化
             priority=max(0, min(_MAX_PRIORITY - 1, int(priority) + _PRIORITY_OFFSET)),
-            expiration=None if delay is None else str(max(1, int(delay * 1000))),
+            expiration=None if expiration_ms is None else str(max(1, expiration_ms)),
             headers=headers,
             content_type="application/octet-stream",
         )
@@ -244,12 +311,17 @@ class AmqpTransport(Transport):
         delay: float | None = None,
     ) -> None:
         priority = int(headers.get(_H_PRIORITY, envelope.priority) if headers else envelope.priority)
-        target = self._delay(queue) if delay and delay > 0 else self._work(queue)
+        ttl_ms = _delay_ttl_ms(delay) if delay and delay > 0 else None
+        target = self._delay(queue, ttl_ms) if ttl_ms is not None else self._work(queue)
         blob = self._codec.encode(envelope, max_bytes=self._max_message_bytes)
-        props = self._properties(envelope, message_id=message_id, priority=priority, delay=delay)
+        props = self._properties(
+            envelope, message_id=message_id, priority=priority, expiration_ms=ttl_ms
+        )
 
         def publish(channel: Any) -> None:
             self._declare(channel, queue)
+            if ttl_ms is not None:
+                self._declare_delay(channel, queue, ttl_ms)
             if headers:
                 merged = dict(props.headers)
                 merged.update(headers)
@@ -297,7 +369,6 @@ class AmqpTransport(Transport):
         visible_at = self._now() + max(0.0, float(delay))
         if env.eta is not None:
             visible_at = max(visible_at, float(env.eta))
-        delivered = visible_at + max(0.0, float(delay))
         self._state.set_state(
             env.id,
             JobState.QUEUED,
@@ -306,7 +377,8 @@ class AmqpTransport(Transport):
             queue=target,
             priority=prio,
             message_id=message_id,
-            enqueued_at=delivered,
+            # 可见时间（以前这里又加了一次 delay，写入的值是要求值的两倍）
+            enqueued_at=visible_at,
         )
         if env.key:
             self._state.set_state(
@@ -598,14 +670,27 @@ class AmqpTransport(Transport):
             work = channel.queue_declare(
                 queue=self._work(queue), durable=True, arguments=self._work_args(queue)
             ).method.message_count
-            delay = channel.queue_declare(
-                queue=self._delay(queue), durable=True, arguments=self._delay_args(queue)
-            ).method.message_count
             dead = channel.queue_declare(queue=self._dlq(queue), durable=True).method.message_count
+            delayed = 0
+            # 延迟消息分散在**各 TTL 队列**里，全部算进 pending
+            for ttl_ms in self._known_delay_ttls(queue):
+                delayed += self._delay_count(channel, queue, ttl_ms)
             self._declared.add(queue)
-            return {"pending": int(work) + int(delay), "dead": int(dead)}
+            return {"pending": int(work) + delayed, "dead": int(dead)}
 
         return self._retry(counts)
+
+    def _delay_count(self, channel: Any, queue: str, ttl_ms: int) -> int:
+        """某个 TTL 延迟队列里的消息数。
+
+        用正常声明（而不是 passive）：passive 碰到不存在的队列会被 broker 以 404 关掉整个 channel，
+        之后这个连接上的所有操作都会失败。声明一次最多多出一个空队列，无害。
+        """
+        return int(
+            channel.queue_declare(
+                queue=self._delay(queue, ttl_ms), durable=True, arguments=self._delay_args(queue)
+            ).method.message_count
+        )
 
     def priority_stats(self, queues: Sequence[str] | None = None) -> dict[int, int]:
         return {}                                     # AMQP 没有按优先级聚合的接口（已声明降级）

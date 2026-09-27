@@ -120,6 +120,62 @@ def test_confirms_default_is_on(prefix, tmp_path):
         transport.close()
 
 
+def test_short_delay_is_not_blocked_by_long_delay(prefix, tmp_path):
+    """回归：共享延迟队列会让**长延迟堵住短延迟**（RabbitMQ 只在队头检查 per-message TTL）。
+
+    修之前实测：先投 `delay=8s`、再投 `delay=0.3s`，短的要等满 8 秒才投出来。
+    现在延迟按 TTL 分队列，短的应在一个量化粒度（≤10%）内到达，这里给 3 秒余量。
+    """
+    transport = build_transport(_url(prefix, tmp_path))
+    try:
+        transport.enqueue(_env("slow"), queue="q", delay=8.0)
+        transport.enqueue(_env("quick"), queue="q", delay=0.3)
+
+        start = time.time()
+        got: list[str] = []
+        while time.time() - start < 3.0 and not got:
+            time.sleep(0.2)
+            got = [d.envelope.task for d in transport.reserve(["q"], worker_id="w", lease=30, limit=5)]
+        assert got == ["quick"], f"短延迟被长延迟堵住了：{got}（等了 {time.time() - start:.1f}s）"
+    finally:
+        for queue in ("q", "exp", "q2"):
+            transport._drop_queues(queue)
+        transport.close()
+
+
+def test_delayed_messages_are_counted_in_pending(prefix, tmp_path):
+    """延迟消息分散在各 TTL 队列里，仍必须统计进 `pending` —— 而且是**跨进程**可见的。
+
+    `taskmq status` 是另一个进程，只能靠侧车登记枚举出用过的延迟队列，
+    否则运维看到的 pending 会漏掉全部延迟任务。
+    """
+    transport = build_transport(_url(prefix, tmp_path))
+    second = None
+    try:
+        transport.enqueue(_env("soon"), queue="q", delay=30.0)
+        transport.enqueue(_env("later"), queue="q", delay=3600.0)
+
+        second = build_transport(_url(prefix, tmp_path))       # 等价于另一个进程的 status
+        assert second.queue_stats(["q"])[0].pending == 2
+        assert transport.queue_stats(["q"])[0].pending == 2
+    finally:
+        for queue in ("q", "exp", "q2"):
+            transport._drop_queues(queue)
+        transport.close()
+        if second is not None:
+            second.close()
+
+
+def test_delay_quantization_never_fires_early():
+    """量化只为分桶：**只会略晚，绝不提前**，且相对误差 ≤10%（绝对 ≤1s）。"""
+    from taskmq.transport.amqp import _delay_ttl_ms
+
+    for delay in (0.05, 0.3, 1.0, 7.0, 60.0, 3600.0):
+        ttl = _delay_ttl_ms(delay)
+        assert ttl >= delay * 1000, f"{delay}s 量化后提前了：{ttl}ms"
+        assert ttl <= delay * 1000 * 1.1 + 1, f"{delay}s 量化得太晚：{ttl}ms"
+
+
 def test_defer_does_not_consume_deliveries(amp):
     amp.enqueue(_env("job"), queue="q")
     time.sleep(0.1)

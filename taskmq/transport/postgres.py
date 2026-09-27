@@ -357,6 +357,17 @@ class PostgresTransport(Transport):
                 (wanted, now, limit, worker_id, now, now + lease),
             )
             rows = cur.fetchall()
+            # reserve 投递 = job 进入 RUNNING（设计文档状态机 QUEUED --> RUNNING: reserve 投递）。
+            # 少了这步，status / workflow 补偿（list_jobs(states=[RUNNING])）都看不到在途 job。
+            if rows:
+                cur.execute(
+                    f"""UPDATE {t}jobs SET state = %s, attempt = m.deliveries, updated_at = %s
+                            FROM {t}messages m
+                            WHERE m.message_id = ANY(%s) AND {t}jobs.job_id = m.job_id
+                              AND {t}jobs.state IN (%s, %s)""",
+                    (JobState.RUNNING, now, [row["message_id"] for row in rows],
+                     JobState.QUEUED, JobState.RETRYING),
+                )
         return [self._delivery(row, worker_id) for row in rows]
 
     def _owned(self, cur: Any, delivery: Delivery) -> Mapping[str, Any] | None:

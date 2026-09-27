@@ -85,6 +85,25 @@ def test_priority_order_and_fifo(pg):
     assert pg.peek_max_priority(["q"]) is None
 
 
+def test_reserve_marks_job_running(pg):
+    """回归：reserve 投递 = job 进 RUNNING（设计文档状态机 `QUEUED --> RUNNING: reserve 投递`）。
+
+    PG 之前漏了这一步：claim 完 job 还停在 QUEUED，于是 `status`、
+    工作流补偿（`list_jobs(states=[RUNNING])`）都看不到在途 job。
+    """
+    job_id = pg.enqueue(_env("t"), queue="q")
+    granted = pg.reserve(["q"], worker_id="w", lease=30, limit=1)
+    assert granted and granted[0].job_id == job_id
+
+    record = pg.get_state(job_id)
+    assert record is not None
+    assert record.state == JobState.RUNNING, f"reserve 后应为 RUNNING，实际 {record.state}"
+    assert record.attempt == 1
+
+    running = [row.job_id for row in pg.list_jobs(states=[JobState.RUNNING])]
+    assert job_id in running, "list_jobs(RUNNING) 必须能看到在途 job"
+
+
 def test_lease_reap_late_ack_and_idempotent_ack(prefix):
     clock = FakeClock()
     transport = PostgresTransport(URL, codec=JSONCodec(), prefix=prefix, clock=clock)

@@ -106,6 +106,13 @@ class App:
         # 而且可能注册了 events / pool / codec，必须在 config.validate() / build_sink() 之前生效。
         self._load_declared_plugins(include)
         self.config.validate()
+        if self.config.result:
+            # 独立结果后端还没实现（docs/design.md 里是设计项）：结果仍然写在 transport 的 job 记录里。
+            # 不静默假装支持：给一条明确的告警，并指出关掉结果的开关。
+            logging.getLogger("taskmq.app").warning(
+                "Config.result（独立结果后端）尚未实现：结果仍写在 transport 的 job 记录里；"
+                "不需要结果请用 @app.task(store_result=False)"
+            )
         self._codec_registry = CodecRegistry()
         self._tasks: dict[str, Task[Any, Any]] = {}
         self._transport: Transport | None = None
