@@ -201,9 +201,12 @@ def _cmd_worker(app: App, args: argparse.Namespace) -> int:
         if args.once:
             worker.run_until_idle(timeout=app.config.shutdown_timeout)
             return 0
+        interval = max(0.001, app.config.poll_interval)
         while not stopping["flag"]:
-            worker.poll()
-            time.sleep(app.config.poll_interval)
+            # 有活就连续 poll；槽位占满时等任意任务完成（不是空转）；真闲下来才 sleep。
+            # 固定 sleep 会把吞吐卡在 concurrency / poll_interval 上（实测 c=4、0.05s → 约 80 条/秒）。
+            if worker.poll() == 0 and not worker.wait_for_slot(timeout=interval):
+                time.sleep(interval)
     except KeyboardInterrupt:  # pragma: no cover - 交互式
         pass
     finally:

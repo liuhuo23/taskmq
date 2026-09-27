@@ -85,6 +85,8 @@ taskmq = ["py.typed"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-q"
+# 规模/边界压测：默认也跑（秒级），想单独压用 `make stress`
+markers = ["stress: 规模、边界与吞吐回归（tests/test_limits_stress.py）"]
 
 [tool.ruff]
 line-length = 110

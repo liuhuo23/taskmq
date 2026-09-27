@@ -23,6 +23,8 @@ make test          # = uv run pytest
 make check         # = ruff + mypy + pyright + pytest（提交前必跑）
 make test-py39     # 在最低支持版本 3.9 上再跑一遍（独立环境 .venv39，不动 .venv）
 make coverage      # 覆盖率
+make stress        # 只跑规模/边界/吞吐用例（tests/test_limits_stress.py）
+make bench         # 压测吞吐/延迟（ARGS 透传：make bench ARGS='-n 20000 -c 16'）
 ```
 
 没有 uv 也能开发：`make venv`（venv + `pip install -e ".[dev]"`），之后 `make test` 会自动用 `.venv`。

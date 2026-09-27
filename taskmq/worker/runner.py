@@ -599,25 +599,51 @@ class Worker:
                 return False
         return self.transport.next_visible_at(self.queues) is None
 
+    def wait_for_slot(self, timeout: float | None = None) -> bool:
+        """等**任意一个在跑的任务完成**；没有在跑的就立刻返回 False。
+
+        主循环用它替代「固定 sleep」：并发槽位占满时 `poll()` 返回 0 并不代表没活干 ——
+        按 `poll_interval` 睡会把吞吐硬卡在 `concurrency / poll_interval`
+        （实测 c=4、0.05s → 约 80 条/秒）。返回 True = 刚有任务完成，可以立刻再取一轮。
+        """
+        with self._lock:
+            futures = list(self._futures)
+        if not futures:
+            return False
+        concurrent.futures.wait(
+            futures, timeout=timeout, return_when=concurrent.futures.FIRST_COMPLETED
+        )
+        return True
+
     def run_until_idle(self, *, timeout: float = 30.0, poll: float | None = None) -> int:
-        """跑到「没有可见消息 + 没有持有」为止；超时抛 `TimeoutError`。"""
+        """跑到「没有可见消息 + 没有持有」为止；超时抛 `TimeoutError`。
+
+        调度节奏：**本轮启动了任务就立刻再来一轮**（把队列抽干），只有一轮什么也没启动时才按
+        `poll` 间隔让出 CPU。否则吞吐会被 `poll_interval` 直接卡死
+        （concurrency=4、poll_interval=0.05 → 最多 ~80 条/秒）；而完全不睡又会自旋到饿死池线程，
+        所以 sleep 有 1ms 下限。
+        """
         interval = float(poll if poll is not None else self.config.poll_interval)
         deadline = time.monotonic() + timeout
         while True:
-            self.poll()
+            started = self.poll()
             if self.is_idle():
                 return self.processed
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     f"run_until_idle 超时（processed={self.processed}, held={self.held()}）"
                 )
+            if started:
+                continue
+            if self.wait_for_slot(timeout=max(0.001, interval)):
+                continue                      # 有任务刚完成 → 立刻再取一轮（下限 1ms，避免纯自旋饿死池线程）
             wait = interval
             next_at = self.transport.next_visible_at(self.queues)
             if next_at is not None:
                 delta = next_at - time.time()
                 if delta > 0:
                     wait = min(interval, max(0.001, delta))
-            time.sleep(max(0.0, wait))
+            time.sleep(max(0.001, wait))
 
     def drain(self, *, timeout: float = 30.0) -> None:
         """等待在途任务跑完（不拉新消息）。"""

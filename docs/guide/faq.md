@@ -41,7 +41,7 @@ Phase，见 [README 决策表](https://github.com/liuhuo23/taskmq#决策)。
 
 租约（`Config(lease=60)`）默认 60 秒，worker 会按 `min(heartbeat_interval, lease/3)` 自动续租。
 但如果进程被 `SIGKILL` / 机器断电，租约到期后消息会重投——这是设计如此。任务越久，越要幂等；
-也可以调大 `lease@@ 降低误判。
+也可以调大 `lease` 降低误判。
 
 ## 怎么控制 CPU 密集任务的并发？
 

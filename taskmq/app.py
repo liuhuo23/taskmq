@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -109,6 +110,11 @@ class App:
         self._tasks: dict[str, Task[Any, Any]] = {}
         self._transport: Transport | None = None
         self._codec: Codec | None = None
+        # 懒加载属性要防并发首用：Web 服务里多线程同时第一次 delay() 时，
+        # 没有这把锁会各自造一个 transport（sqlite 下直接 "database is locked"）。
+        # **必须是可重入锁**：transport 的懒加载内部会取 self.codec（_make_transport），
+        # 用非重入 Lock 会在同一线程里自己卡死。
+        self._lazy_lock = threading.RLock()
         self._closed = False
         self._sinks: list[EventSink] = [build_sink(self.config.events)]
         self._schedules: list[Schedule] = []
@@ -450,13 +456,17 @@ class App:
     @property
     def codec(self) -> Codec:
         if self._codec is None:
-            self._codec = get_codec(self.config.serializer, self._codec_registry)
+            with self._lazy_lock:
+                if self._codec is None:
+                    self._codec = get_codec(self.config.serializer, self._codec_registry)
         return self._codec
 
     @property
     def transport(self) -> Transport:
         if self._transport is None:
-            self._transport = self._make_transport()
+            with self._lazy_lock:      # 双重检查：并发首次提交只能装配出一个 transport
+                if self._transport is None:
+                    self._transport = self._make_transport()
         return self._transport
 
     def _transport_options(self, url: str) -> TransportOptions:

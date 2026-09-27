@@ -15,10 +15,16 @@ worker 的职责只有三件：**reserve（领消息）→ 执行 → ack/nack**
 === "嵌进自己的程序"
 
     ```python
+    import time
     from taskmq import Worker
 
     with Worker(app, queues=["email"], concurrency=8) as worker:
-        worker.run_until_idle(timeout=30)     # 或 worker.run_forever()
+        worker.run_until_idle(timeout=30)     # 跑空即退出（批处理 / 测试）
+
+    # 常驻循环（CLI 做的就是这件事）：有活连续取，空转才按 poll_interval 让出 CPU
+    while running:
+        if worker.poll() == 0 and not worker.wait_for_slot(timeout=app.config.poll_interval):
+            time.sleep(app.config.poll_interval)
     ```
 
 === "测试 / 调试：同进程跑空"
@@ -29,7 +35,7 @@ worker 的职责只有三件：**reserve（领消息）→ 执行 → ack/nack**
     run_until_idle(app, queues=["email"], timeout=10)     # 一次性跑空
 
     with worker_for(app, queues=["email"], prefetch=4) as worker:   # 断点调试友好
-        worker.run_once()
+        worker.poll()                                                 # 单步：领一次 + 启动到并发上限
     ```
 
 ## 池（执行模型）
@@ -93,10 +99,42 @@ taskmq status            # 队列深度 / 优先级分布 / WORKERS / LIMITATION
 | 场景 | 调整 |
 |---|---|
 | 空队列时 CPU 空转 | 调大 `poll_interval` / `max_poll_interval`（默认 0.05 / 0.5，指数退避） |
-| 任务很长（> lease） | 调大 `lease@@（worker 会自动续租，但机器假死时回收会变慢） |
-| 机器假死要快速重投 | 调小 `lease@@；同时保证任务幂等 |
+| 任务很长（> lease） | 调大 `lease`（worker 会自动续租，但机器假死时回收会变慢） |
+| 机器假死要快速重投 | 调小 `lease`；同时保证任务幂等 |
 | 优先级公平性被破坏 | 保持 `prefetch == concurrency`（默认），别为了吞吐调大 |
 | CPU 密集 | `pool="processes"` + `hard_timeout` |
+| 吞吐上不去 | 先 `make bench` 定位是排队还是执行：换后端 / 调大 `concurrency` / 把 sqlite 放本地盘 |
+
+## 吞吐与上限（实测）
+
+取件节奏：**有活就连续取；槽位占满就等任意一个任务完成；真没活才按 `poll_interval` 睡**。
+吞吐不该被 `poll_interval` 卡住 —— 早期实现每轮 `poll()` 后无条件 sleep，
+上限恰好是 `concurrency / poll_interval`（并发 8、0.05s → 约 160 条/秒）；修好后同一配置从 117 条/秒提到约 2500 条/秒。
+
+实测（M 系列 Mac，单进程，2000 条，并发 8；`make bench` 可复现）：
+
+| 后端 | 入队 | 消费 | 说明 |
+|---|---|---|---|
+| `memory://` | ~65k/s | ~13k/s（500 条）/ ~5k/s（2000 条） | 进程内；**积压越大越慢**（每次取件全表扫描，10k 积压掉到 ~1.2k/s） |
+| `sqlite://` | ~12k/s | ~2.7k/s | 每条一次提交，fsync 主导：本地盘 ~2.7k/s，外置/网络卷只有 ~0.8k/s |
+| `redis://` | ~1.2k/s | ~0.8k/s | 每消息多趟往返、无流水线；关掉 Lua（`lua=off`）再慢约 2.5 倍 |
+| `postgresql://` | 视网络 | 视网络 | `FOR UPDATE SKIP LOCKED`，适合已有 PG 的团队 |
+
+几条硬边界：
+
+- `max_message_bytes`（默认 256KB）是硬上限，超了直接 `MessageTooLarge`，不截断；
+- 优先级只有 `-9..9`，越界在**提交侧**就 `ConfigError`（不 clamp）；
+- `max_attempts` 是任务级（跨重试累加）；`deliveries` 是**消息级**计数，毒丸保护靠它（同一条消息反复崩就累加）；
+- 深队列里优先级仍然严格：跨档严格优先、档内 FIFO，插队只发生在"还没开始执行"的预留上。
+
+压自己的场景：
+
+```bash
+make bench                                    # 默认 memory:// 2000 条
+make bench ARGS='-t "sqlite:///./b.db" -n 20000 -c 16 --payload 4096'
+python scripts/bench.py -t "redis://127.0.0.1:6379/15?prefix=b:" -n 5000
+make stress                                   # 边界/规模正确性用例（tests/test_limits_stress.py）
+```
 
 ## 下一步
 

@@ -53,7 +53,9 @@ taskmq worker -Q email,default -c 8
 uv sync                     # 按 uv.lock 装依赖（dev group 含 pytest / ruff / mypy / pyright / …）
 make test                   # = uv run pytest
 make test-py39              # 在最低支持版本 3.9 上跑一遍（独立环境 .venv39，不动 .venv）
-make check                  # = lint + typecheck(mypy + pyright) + test
+make check                  # = lint + typecheck(mypy + pyright) + test + 文档体检
+make stress                 # 只跑规模/边界/吞吐用例（tests/test_limits_stress.py）
+make bench                  # 压测吞吐/延迟：make bench ARGS='-t "sqlite:///./b.db" -n 20000 -c 16'
 ```
 
 **3.9 / 3.10 的分工**：`.python-version` 固定 **3.10**（日常开发与类型检查的语言级别），
@@ -75,7 +77,7 @@ make test                   # 没有 uv 时用 .venv/bin/python -m pytest
 只为在 HOME 不可写的受限沙箱里也能用，普通开发机不受影响。依赖声明有两处、必须一致：
 `[dependency-groups].dev`（uv）与 `[project.optional-dependencies].dev`（pip），CI 两条路径都会跑。
 
-## 当前状态（Phase 1–2 完成：306 个测试全绿，含真 Redis / Redis Cluster / PostgreSQL / RabbitMQ）
+## 当前状态（Phase 1–2 完成：324 个测试全绿，含真 Redis / Redis Cluster / PostgreSQL / RabbitMQ）
 
 已实现：
 

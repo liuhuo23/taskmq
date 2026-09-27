@@ -30,7 +30,7 @@ else
   PYRIGHT := $(UV) run pyright
 endif
 
-.PHONY: venv sync test test-py39 lint fmt typecheck typecheck-mypy typecheck-pyright coverage \
+.PHONY: venv sync test test-py39 stress bench lint fmt typecheck typecheck-mypy typecheck-pyright coverage \
 	pg-up pg-down test-postgres mq-up mq-down test-amqp redis-cluster-up redis-cluster-down \
 	test-redis-cluster docs-check check clean
 
@@ -122,6 +122,12 @@ redis-cluster-down:  ## 删掉测试容器
 
 test-redis-cluster:  ## 只跑 Redis Cluster 测试（默认连上面的容器）
 	TASKMQ_TEST_REDIS_CLUSTER_URL=$(REDIS_CLUSTER_URL) $(PYTEST) tests/test_redis_cluster.py
+
+stress:          ## 只跑规模/边界/吞吐用例（tests/test_limits_stress.py）
+	$(PYTEST) tests/test_limits_stress.py -m stress
+
+bench:           ## 压测（透传参数：make bench ARGS='-t "sqlite:///./b.db" -n 20000 -c 16'）
+	$(PY) scripts/bench.py $(ARGS)
 
 docs-check:      ## 文档体检（代码围栏配平 / 反引号装饰器）
 	$(PYTHON) scripts/check_docs.py

@@ -728,6 +728,46 @@ def test_submit_delay_and_eta_are_relative_seconds():
         assert handle.state == JobState.QUEUED, f"{why} 不该立刻执行（当前 {handle.state}）"
     app.close()
 
+def test_lazy_transport_and_codec_share_a_reentrant_lock():
+    """回归：`App.transport` 的懒加载内部会取 `App.codec`，两者必须共用**可重入**锁。
+
+    用非重入 `threading.Lock` 时，同一个线程会在这里自己卡死（0% CPU、无限等锁）——
+    任何 App 的首次提交都会走这条路径，所以它一挂就是整套测试卡住。
+    """
+    app = App(Config(transport="memory://", events="null"))
+    assert app.codec is not None
+    transport = app.transport
+    assert transport is app.transport, "transport 只应装配一次"
+    app.close()
+
+
+def test_lazy_transport_is_built_once_under_concurrent_first_use():
+    """多线程同时**首次**使用：只能装配出一个 transport。
+
+    没锁的话每个线程各造一个连接（sqlite 下直接 "database is locked"）；
+    Web 服务里多线程第一次 delay() 就是这种时序。
+    """
+    app = App(Config(transport="memory://", events="null"))
+    seen: list[int] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(8)
+
+    def grab() -> None:
+        barrier.wait()
+        transport = app.transport
+        with lock:
+            seen.append(id(transport))
+
+    threads = [threading.Thread(target=grab) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(set(seen)) == 1, f"装配出了多个 transport：{len(set(seen))}"
+    app.close()
+
+
 
 # ============================================================== Redis Cluster 槽位
 def test_crc16_and_hash_slot_match_redis_cluster_rules():

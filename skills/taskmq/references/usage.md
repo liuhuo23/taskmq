@@ -155,17 +155,20 @@ from taskmq import Worker
 with Worker(app, queues=["email"], concurrency=8) as worker:
     worker.run_until_idle(timeout=30)          # 跑空即退出（测试/批处理）
 
-# 常驻循环就是 CLI 干的事：poll() 一次 = reserve + 启动可执行的任务
+# 常驻循环就是 CLI 干的事：poll() 返回本轮启动数
 while running:
-    worker.poll()
-    time.sleep(app.config.poll_interval)
+    if worker.poll() == 0 and not worker.wait_for_slot(timeout=app.config.poll_interval):
+        time.sleep(app.config.poll_interval)   # 只有真闲着才睡
 ```
 
 - **池**：`threads`（IO 默认）/ `processes`（CPU，hard_timeout 可强杀，需要 `module:attr` 才能重建 App）/ `asyncio`（`async def` 任务）/ `solo`（测试）；
 - **prefetch = concurrency**（默认）保证「不会有预留了却排不到队」的公平性，除非明确要测让位否则别调大；
 - worker 会周期性续租 + `reap_expired_leases()`，并（有工作流时）做补偿推进；
 - 退出：先停领新任务，等在跑的收尾，最长等 `shutdown_timeout`；
-- 多机部署：worker 无状态，多起几个进程即可；任务必须幂等。
+- 多机部署：worker 无状态，多起几个进程即可；任务必须幂等；
+- **取件节奏**：有活连续取、槽位占满等任意任务完成、真没活才睡 —— 所以吞吐**不**等于 `concurrency / poll_interval`。
+  想量自己的场景：`make bench`（`python scripts/bench.py`，可换后端/规模/payload），
+  边界与规模正确性：`make stress`。参考量级：memory ~5k/s、sqlite ~2.7k/s、redis（Lua）~0.8k/s（2000 条、并发 8）。
 
 ## 8. DAG 工作流
 
