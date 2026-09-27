@@ -111,14 +111,31 @@ taskmq status            # 队列深度 / 优先级分布 / WORKERS / LIMITATION
 吞吐不该被 `poll_interval` 卡住 —— 早期实现每轮 `poll()` 后无条件 sleep，
 上限恰好是 `concurrency / poll_interval`（并发 8、0.05s → 约 160 条/秒）；修好后同一配置从 117 条/秒提到约 2500 条/秒。
 
-实测（M 系列 Mac，单进程，2000 条，并发 8；`make bench` 可复现）：
+实测（M 系列 Mac，单进程，并发 8；`make bench` 可复现。AMQP 800 条、PG 500 条，其余 2000 条）：
 
-| 后端 | 入队 | 消费 | 说明 |
+| 后端 | 入队 | 消费 | 瓶颈在哪 |
 |---|---|---|---|
-| `memory://` | ~65k/s | ~13k/s（500 条）/ ~5k/s（2000 条） | 进程内；**积压越大越慢**（每次取件全表扫描，10k 积压掉到 ~1.2k/s） |
-| `sqlite://` | ~12k/s | ~2.7k/s | 每条一次提交，fsync 主导：本地盘 ~2.7k/s，外置/网络卷只有 ~0.8k/s |
-| `redis://` | ~1.2k/s | ~0.8k/s | 每消息多趟往返、无流水线；关掉 Lua（`lua=off`）再慢约 2.5 倍 |
-| `postgresql://` | 视网络 | 视网络 | `FOR UPDATE SKIP LOCKED`，适合已有 PG 的团队 |
+| `memory://` | 60k/s | 5.0k/s（500 条小积压 13.5k/s） | 进程内；**积压越大越慢**（每次取件全表扫描，10k 积压掉到 1.2k/s） |
+| `sqlite://` | 11.7k/s | 2.6k/s | 每条一次提交，**fsync 主导**：放本地盘 2.6k/s，放外置/网络卷只有 0.8k/s |
+| `redis://` | 1.0k/s | 0.73k/s | 每消息多趟往返、无流水线；`lua=off` 再慢约 2.5 倍 |
+| `redis://…&cluster=1` | 0.66k/s | 0.42k/s | 跨槽取件降级（N 次 peek + 客户端合并），见 `status` 的 LIMITATIONS |
+| `amqp://`（默认确认） | **0.05k/s** | 2.4k/s | 每条发布都等 broker **落盘确认**（持久化 + fsync） |
+| `amqp://…&confirms=off` | **6.4k/s** | 2.6k/s | 不等确认：快 100 倍，代价是发布失败看不见（见下） |
+| `postgresql://` | 0.04k/s | 0.05k/s | 每条操作一次 commit，同样是 **fsync 主导**（本机单条 commit 17.8ms，批量只 0.68ms，26×） |
+
+> **本机这几个"慢数字"是磁盘 fsync，不是实现缺陷**（对照组：RabbitMQ 持久化+确认 58/s、非持久化+确认 4222/s、
+> 持久化不等确认 27457/s；PG 单条 commit 17.8ms、批量 0.68ms）。换到真实 SSD / 独立磁盘，PG 与 AMQP 会回到
+> 每秒几百到几千；但"每条一次 fsync"的结构性上限仍然存在，所以高吞吐场景用 `redis://`，或对 AMQP 关确认。
+
+`amqp://` 的确认开关：
+
+```text
+amqp://user:pass@host:5672/vhost?state=sqlite:///./state.db                 # 默认：持久化发布 + 等确认
+amqp://user:pass@host:5672/vhost?state=sqlite:///./state.db&confirms=off    # 高吞吐：不等确认（发布失败不可见）
+```
+
+消息本体仍然是 `delivery_mode=2`（broker 侧持久化），`confirms=off` 只是**不等** broker 的落盘回执；
+消息真的丢了（broker 崩溃、队列满被拒）你不会收到异常。要可靠性就保持默认。
 
 几条硬边界：
 

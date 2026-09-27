@@ -137,5 +137,7 @@ def build_transport(
             clock=clock,
             idempotency_ttl=idempotency_ttl,
             max_message_bytes=max_message_bytes,
+            # ?confirms=off 可关（拿"发布失败可见性"换吞吐，见 docs/guide/workers.md）
+            confirms=_parse_bool(params.get("confirms")) is not False,
         )
     raise ConfigError(f"未知的 transport scheme：{scheme or url!r}")

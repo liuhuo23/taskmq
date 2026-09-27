@@ -99,6 +99,7 @@ class AmqpTransport(Transport):
         heartbeat: int = 60,
         idempotency_ttl: float = 86400.0,
         max_message_bytes: int | None = None,
+        confirms: bool = True,
     ) -> None:
         self._pika = _import_driver()
         self._url = url
@@ -110,6 +111,9 @@ class AmqpTransport(Transport):
         self._heartbeat = int(heartbeat)
         self._idempotency_ttl = float(idempotency_ttl)
         self._max_message_bytes = max_message_bytes
+        #: 生产者确认（`?confirms=off` 可关）。开着 = 每条发布等 broker 落盘确认（持久化 + fsync），
+        #: 慢但发布失败看得见；关掉 = 只保证写进 TCP，本地实测快两个数量级（见 docs/guide/workers.md）。
+        self._confirms = bool(confirms)
         self._lock = threading.RLock()
         self._conn: Any = None
         self._channel: Any = None
@@ -134,7 +138,8 @@ class AmqpTransport(Transport):
         try:
             self._conn = self._pika.BlockingConnection(params)
             self._channel = self._conn.channel()
-            self._channel.confirm_delivery()          # 生产者侧确认：发布失败要看得见
+            if self._confirms:
+                self._channel.confirm_delivery()      # 生产者侧确认：发布失败要看得见（默认开）
         except Exception as exc:
             raise TransportError(f"连不上 RabbitMQ（{self._url.split('@')[-1]}）：{exc}") from exc
         self._declared.clear()

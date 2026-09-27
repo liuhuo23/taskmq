@@ -85,6 +85,41 @@ def test_priority_within_queue_and_stats(amp):
     assert amp.queue_stats(["q"])[0].inflight == 2
 
 
+def test_confirms_can_be_disabled_for_throughput(prefix, tmp_path):
+    """`?confirms=off`：关掉生产者确认（拿"发布失败可见性"换吞吐）。
+
+    开着确认时 pika 每条 `basic_publish` 都等 broker 落盘 ack（本地 VM 实测 ~58 条/秒），
+    关掉后本地实测 ~2 万条/秒。这里只验证开关生效且投递语义不变（真吞吐见 `scripts/bench.py`）。
+    """
+    url = f"{BROKER}?state=sqlite:///{tmp_path / 'state.db'}&prefix={prefix}&confirms=off"
+    transport = build_transport(url)
+    try:
+        assert transport._confirms is False
+        assert transport._channel._delivery_confirmation is False     # 没有开 confirm 模式
+        transport.enqueue(_env("fast"), queue="q")
+        time.sleep(0.1)
+        granted = transport.reserve(["q"], worker_id="w", lease=30, limit=1)
+        assert [d.envelope.task for d in granted] == ["fast"]
+        transport.ack(granted[0])
+        assert transport.queue_stats(["q"])[0].pending == 0
+    finally:
+        for queue in ("q", "exp", "q2"):
+            transport._drop_queues(queue)
+        transport.close()
+
+
+def test_confirms_default_is_on(prefix, tmp_path):
+    """默认必须开确认：发布失败要看得见（安全优先，快是选项）。"""
+    transport = build_transport(_url(prefix, tmp_path))
+    try:
+        assert transport._confirms is True
+        assert transport._channel._delivery_confirmation is True
+    finally:
+        for queue in ("q", "exp", "q2"):
+            transport._drop_queues(queue)
+        transport.close()
+
+
 def test_defer_does_not_consume_deliveries(amp):
     amp.enqueue(_env("job"), queue="q")
     time.sleep(0.1)

@@ -67,6 +67,11 @@ job 状态 / 命名租约 / worker 表 / job 枚举都放在侧车（可以是 s
 
 AMQP 是 per-queue 有序，**跨队列不做全局严格优先** → 声明 `global_priority` 降级（用 `x-max-priority` 排同队列）。
 
+**吞吐开关**：默认每条发布都等 broker 的持久化确认（`delivery_mode=2` + publisher confirm），
+每次都要等一次落盘 fsync —— 可靠但慢（本机 RabbitMQ 实测 58 条/秒）。加 `&confirms=off` 就不等回执，
+本机实测 6.4k/s（约 100 倍），代价是**发布失败不再报错**（消息丢了你看不见）。要可靠性保持默认，
+要高吞吐考虑 `redis://`。详见 [吞吐与上限（实测）](workers.md#吞吐与上限实测)。
+
 ## 声明式降级与一致性套件
 
 每个后端都要**如实声明**能力：

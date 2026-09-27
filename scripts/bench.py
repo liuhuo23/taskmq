@@ -13,9 +13,20 @@
 - **消费**：同进程 `run_until_idle`（reserve → 执行 → ack 全链路）跑空；
 - **延迟**：从提交到任务真正被执行的墙钟时间（含排队），报 p50 / p95 / max。
 
-参考量级（M 系列 Mac、单进程、redis 在 loopback）：
-memory:// ≈ 1.3 万/s（小积压）→ 1.2 千/s（1 万积压，受全表扫描影响）；
-sqlite:// ≈ 3–5 千/s；redis（Lua）≈ 800/s；redis（无 Lua 回退）≈ 300/s。
+参考量级（M 系列 Mac、单进程、并发 8、redis/rabbitmq/pg 都在本机容器里；2026-09 实测）：
+
+  后端                      入队       消费      备注
+  memory://                 60k/s      5.0k/s    积压越大越慢（每次取件全表扫描）
+  sqlite://（本地盘）       11.7k/s    2.6k/s    每条一次 commit（fsync）
+  sqlite://（外置/网络卷）   ~2k/s      0.8k/s    同上，fsync 更贵
+  redis://（Lua）            1.0k/s     0.73k/s   每消息多趟往返
+  redis://（&cluster=1）     0.66k/s    0.42k/s   跨槽取件降级
+  amqp://（默认）            **0.05k/s** 2.4k/s   每条等 broker 落盘确认 ← 入队瓶颈
+  amqp://（&confirms=off）   6.4k/s     2.6k/s    不等确认（发布失败不可见）
+  postgresql://              0.04k/s    0.05k/s   每条操作一次 commit（fsync）
+
+  注意：容器/VM 里的 PG 与 RabbitMQ 数字主要是**磁盘 fsync**（本机 PG 单条 commit 17.8ms、批量 0.68ms；
+  RabbitMQ 持久化+确认 58/s、非持久化 4222/s、持久化不等确认 27457/s），真实 SSD 上会高不少。
 """
 from __future__ import annotations
 

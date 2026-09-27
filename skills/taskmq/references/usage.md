@@ -136,7 +136,7 @@ send_email.apply_async(
 | `redis://host:6379/1?prefix=app:` | 多机高吞吐 | 零依赖 RESP2 客户端 + Lua 原子取件；`&lua=off` 强制走 WATCH/MULTI |
 | `redis://host:7380/0?prefix=app:&cluster=1` | Redis Cluster | **db 只能 0**；键按队列打 hash tag；跨队列取件降级（`status` 会声明） |
 | `postgresql://user:pass@host:5432/db?prefix=app_` | 多机强一致 | `FOR UPDATE SKIP LOCKED`；需要 `psycopg` |
-| `amqp://user:pass@host:5672/%2F?state=sqlite:///./state.db` | 已有 RabbitMQ | `state=` 侧车**必填**（job 状态/租约/worker 表/DAG 索引存在那里） |
+| `amqp://user:pass@host:5672/%2F?state=sqlite:///./state.db` | 已有 RabbitMQ | `state=` 侧车**必填**；默认每条等 broker 落盘确认（慢），`&confirms=off` 可换吞吐 |
 
 内建后端都支持 `supports_leases / supports_workers / supports_job_listing`；每个后端在 `limitations` 里
 如实声明降级（如 AMQP/Cluster 的 `global_priority`）。`taskmq status` 会打印 `LIMITATIONS`，检查能力前先看它。
@@ -168,7 +168,8 @@ while running:
 - 多机部署：worker 无状态，多起几个进程即可；任务必须幂等；
 - **取件节奏**：有活连续取、槽位占满等任意任务完成、真没活才睡 —— 所以吞吐**不**等于 `concurrency / poll_interval`。
   想量自己的场景：`make bench`（`python scripts/bench.py`，可换后端/规模/payload），
-  边界与规模正确性：`make stress`。参考量级：memory ~5k/s、sqlite ~2.7k/s、redis（Lua）~0.8k/s（2000 条、并发 8）。
+  边界与规模正确性：`make stress`。参考量级（2000 条、并发 8）：memory ~5k/s、sqlite ~2.6k/s、
+  redis（Lua）~0.7k/s、redis cluster ~0.4k/s、amqp ~2.4k/s（入队只有 0.05k/s，除非 `&confirms=off`）、PG 受 fsync 限制。
 
 ## 8. DAG 工作流
 
